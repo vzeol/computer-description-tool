@@ -37,6 +37,14 @@ Ce fichier fait référence pour toute session Claude qui travaille sur ce dép�
 - Les notes de release s'affichent dans la fenêtre « Mise à jour disponible » des exe installés, qui ne comprend pas le markdown (seuls les `#` de titre sont retirés) et coupe à 800 caractères. Notes courtes, en simple liste à puces : pas de gras, pas de liens, pas de section « Installation » (sa place est le README).
 - Test de bout en bout, sur le DC : compiler le même script avec une version inférieure (ex. `-version "1.2.99.0"`) et le lancer. Il doit proposer la dernière release, se remplacer et redémarrer.
 
+## Réveil des postes (Wake-on-LAN)
+
+- Le magic packet vise la **MAC** du poste et part en **diffusion dirigée** sur le sous-réseau de l'étendue DHCP (réseau OU inverse du masque). Jamais vers l'IP du poste (baux courts, IP changeantes) ni en `255.255.255.255` (ne franchit pas les routeurs et part par n'importe quelle interface).
+- Les MAC viennent des baux et réservations du **DHCP du DC** (module `DhcpServer`, local puis `$env:LOGONSERVER`), relues au lancement et avant chaque lot, et sont **mémorisées dans l'AD** (attribut `networkAddress` de l'objet ordinateur, réputé libre) pour survivre à l'expiration des baux.
+- Sans DHCP lisible, tout fonctionne comme avant, avec « réveil indisponible » dans l'info-bulle de la barre de statut.
+- Après des réveils, l'outil sonde les postes toutes les 5 s (`$script:WolAttenteMax` = 120 s) et traite chacun dès que ping et `ADMIN$` répondent ; ceux qui ne répondent pas reprennent leur état réel.
+- Diagnostic hors outil : un script `test-wol.ps1` (Bureau de l'utilisateur, hors dépôt) reproduit la chaîne DHCP → diffusion → magic packet et chronomètre le démarrage.
+
 ## Passage à une nouvelle version (uniquement sur demande)
 
 Deux niveaux, au choix de l'utilisateur :
@@ -66,6 +74,6 @@ Invoke-ps2exe -inputFile .\Computer-Description-Tool-X.Y.ps1 -outputFile ".\Comp
 - Dans une chaîne, écrire `${nl}` et non `$nl` devant une lettre accentuée : `$nlÊtes` est lu comme une seule variable.
 - La cible est Windows PowerShell 5.1, pas PowerShell 7. Exemple : un `Import-Csv` qui ne renvoie qu'une ligne donne un objet sans `.Count` ; toujours l'entourer de `@()`.
 - `gh` : si la commande n'est pas trouvée, utiliser le chemin complet `C:\Program Files\GitHub CLI\gh.exe`.
-- PSScriptAnalyzer remonte des avertissements connus et sans gravité : ShouldProcess sur les fonctions `Set-*`, `New-*`, `Update-*` et `Remove-*`, « pluriel » sur les noms français (`Test-Prerequis`, `Invoke-LotPostes`, `Get-LignesAReessayer`, `Set-LiensEnTeteActifs`), `catch` vide volontaire dans `Get-SalleFromAD`.
+- PSScriptAnalyzer remonte des avertissements connus et sans gravité : ShouldProcess sur les fonctions `Set-*`, `New-*`, `Update-*` et `Remove-*`, « pluriel » sur les noms français (`Test-Prerequis`, `Invoke-LotPostes`, `Get-LignesAReessayer`, `Set-LiensEnTeteActifs`, `Wait-PostesReveilles`, `Get-ParamsDhcp`), `catch` vides volontaires (`Get-SalleFromAD`, lectures DHCP/AD du réveil).
 - Le glisser-déposer depuis l'Explorateur ne fonctionne pas si l'outil est lancé « en tant qu'administrateur » (isolation UIPI de Windows) ; l'outil n'a pas besoin d'élévation.
 - Windows limite la description d'un poste (`srvcomment`) à 48 caractères : le champ est limité à 48 et une ligne CSV plus longue est signalée « DESC. TROP LONGUE » sans être appliquée.

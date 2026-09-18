@@ -353,7 +353,7 @@ $null = $gridResults.Columns.Add('colEtat', 'État')
 # Colonne État : en mode remplissage comme les autres (sinon le séparateur Description | État n'est plus
 # déplaçable), mais jamais plus étroite que son libellé le plus long pour ne pas être tronquée
 $gridResults.Columns['colEtat'].FillWeight = 60
-$gridResults.Columns['colEtat'].MinimumWidth = [System.Windows.Forms.TextRenderer]::MeasureText("DESC. TROP LONGUE", $baseFont).Width + 16
+$gridResults.Columns['colEtat'].MinimumWidth = [System.Windows.Forms.TextRenderer]::MeasureText("PING K.O · réveil envoyé", $baseFont).Width + 16
 $form.Controls.Add($gridResults)
 
 # Couleurs de statut (lignes du suivi)
@@ -361,12 +361,16 @@ $colorOkBack   = [System.Drawing.Color]::FromArgb(223,246,221)
 $colorOkFore   = [System.Drawing.Color]::FromArgb(30,90,30)
 $colorKoBack   = [System.Drawing.Color]::FromArgb(253,231,230)
 $colorKoFore   = [System.Drawing.Color]::FromArgb(140,20,20)
+$colorWolBack  = [System.Drawing.Color]::FromArgb(255,243,205)
+$colorWolFore  = [System.Drawing.Color]::FromArgb(133,77,14)
 
-# États affichés en vert ; les autres (PING K.O, ADMIN$ K.O, ERREUR, LIGNE INVALIDE, DESC. TROP LONGUE) en rouge
+# États affichés en vert ; « réveil envoyé » en orange ; les autres (PING K.O, ADMIN$ K.O, ERREUR,
+# LIGNE INVALIDE, DESC. TROP LONGUE) en rouge
 $etatsOK = @('OK', 'JOIGNABLE')
+$etatReveil = 'PING K.O · réveil envoyé'
 
 # Échecs qu'une nouvelle tentative peut résoudre (poste éteint, accès refusé, erreur passagère)
-$etatsReessayables = @('PING K.O', 'ADMIN$ K.O', 'ERREUR')
+$etatsReessayables = @('PING K.O', $etatReveil, 'ADMIN$ K.O', 'ERREUR')
 
 function Set-SuiviRowEtat {
     param($Row, [string]$Etat)
@@ -375,6 +379,10 @@ function Set-SuiviRowEtat {
     if ($etatsOK -contains $Etat) {
         $Row.DefaultCellStyle.BackColor = $colorOkBack
         $Row.DefaultCellStyle.ForeColor = $colorOkFore
+    }
+    elseif ($Etat -eq $etatReveil) {
+        $Row.DefaultCellStyle.BackColor = $colorWolBack
+        $Row.DefaultCellStyle.ForeColor = $colorWolFore
     }
     else {
         $Row.DefaultCellStyle.BackColor = $colorKoBack
@@ -424,7 +432,7 @@ $toolTip.SetToolTip($btnTest,  "Teste l'accès (Ping + ADMIN$) et lit la descrip
 $toolTip.SetToolTip($btnApply,"Applique la description dans le registre et l'AD")
 $toolTip.SetToolTip($btnHelp, "Affiche l'aide sur le format CSV attendu")
 $toolTip.SetToolTip($btnCSV,  "Traite un fichier CSV et suit la progression en temps réel (le fichier peut aussi être déposé sur la fenêtre)")
-$toolTip.SetToolTip($btnRetry, "Relance les postes en échec du suivi (par exemple une fois les postes allumés)")
+$toolTip.SetToolTip($btnRetry, "Relance les postes en échec du suivi ; les postes éteints dont la MAC est connue sont d'abord réveillés (Wake-on-LAN)")
 
 ############################################
 # Fonction
@@ -512,7 +520,9 @@ function Set-DescriptionPoste {
 }
 
 # Traite une liste de postes avec progression et annulation ; utilisé par « Traiter CSV » et « Réessayer les échecs ».
-# Chaque élément : PC, Desc, Action et Row (ligne du suivi à mettre à jour, ou $null pour en ajouter une)
+# Chaque élément : PC, Desc, Action et Row (ligne du suivi à mettre à jour, ou $null pour en ajouter une).
+# Un poste éteint dont la MAC est connue est réveillé (Wake-on-LAN) ; les postes réveillés sont ensuite
+# attendus puis traités dès qu'ils répondent.
 function Invoke-LotPostes {
     param([array]$Lignes, [string]$Libelle)
 
@@ -523,12 +533,17 @@ function Invoke-LotPostes {
     $progressBar.Visible = $true
     $progressBar.Value = 0
 
-    $nbOK = 0
-    $nbKO = 0
     $index = 0
     $total = $Lignes.Count
+    $traitees = @()
+    $reveillees = @()
 
     try {
+        if ($script:WolDisponible) {
+            Set-Status "$Libelle : lecture des adresses MAC (DHCP, AD)..."
+            Update-CarteMac
+        }
+
         foreach ($ligne in $Lignes) {
 
             if ($script:CancelRequested) {
@@ -546,23 +561,30 @@ function Invoke-LotPostes {
             }
             else {
                 $etat = (Set-DescriptionPoste -PC $ligne.PC -Desc $ligne.Desc).Etat
+                if ($etat -eq "PING K.O" -and (Send-Reveil -PC $ligne.PC)) {
+                    $etat = $etatReveil
+                    $reveillees += $ligne
+                }
             }
-
-            if ($etatsOK -contains $etat) { $nbOK++ } else { $nbKO++ }
 
             if ($ligne.Row) {
                 Set-SuiviRowEtat $ligne.Row $etat
                 Show-SuiviRow $ligne.Row
             }
             else {
-                $null = Add-SuiviRow -PC $ligne.PC -Desc $ligne.Desc -Etat $etat -Action $ligne.Action
+                $ligne.Row = Add-SuiviRow -PC $ligne.PC -Desc $ligne.Desc -Etat $etat -Action $ligne.Action
             }
+            $traitees += $ligne
 
             $index++
             $progressBar.Value = [Math]::Min(100, [int](($index / $total) * 100))
             Set-Status "$Libelle... ($index / $total)"
 
             [System.Windows.Forms.Application]::DoEvents()
+        }
+
+        if ($reveillees.Count -gt 0 -and -not $script:CancelRequested) {
+            Wait-PostesReveilles -Lignes $reveillees -Libelle $Libelle
         }
 
         if (-not $script:CancelRequested) {
@@ -579,7 +601,9 @@ function Invoke-LotPostes {
         Enable-UI
     }
 
-    [PSCustomObject]@{ OK = $nbOK; KO = $nbKO; Traites = $index; Total = $total }
+    # Bilan d'après l'état final des lignes (les postes réveillés ont pu changer d'état pendant l'attente)
+    $nbOK = @($traitees | Where-Object { $etatsOK -contains "$($_.Row.Cells['colEtat'].Value)" }).Count
+    [PSCustomObject]@{ OK = $nbOK; KO = ($traitees.Count - $nbOK); Traites = $traitees.Count; Total = $total }
 }
 
 # Propose le rapport CSV du suivi ; s'il reste des échecs relançables, les exporte aussi
@@ -631,7 +655,8 @@ function Show-BilanLot {
 
     $nbEchecs = (Get-LignesAReessayer).Count
     if ($nbEchecs -gt 0) {
-        $texte += $nl + "$nbEchecs poste(s) en échec : « Réessayer les échecs » les relance (par exemple une fois les postes allumés)."
+        $texte += $nl + $(if ($script:WolDisponible) { "$nbEchecs poste(s) en échec : « Réessayer les échecs » les réveille (MAC connue) puis les relance." }
+                          else { "$nbEchecs poste(s) en échec : « Réessayer les échecs » les relance (par exemple une fois les postes allumés)." })
     }
 
     $txtOut.Text = $texte
@@ -744,9 +769,21 @@ $null = $btnTest.Add_Click({
 
         $acces = Test-AccesPoste $pc
         if ($acces) {
+            $message = "ADMIN$ K.O : pas d'accès administrateur sur $pc."
+            if ($acces -eq "PING K.O") {
+                $message = "Ping K.O : $pc est hors ligne."
+                if ($script:WolDisponible) {
+                    $info = Get-InfoReveil $pc
+                    if (-not $info) { Update-CarteMac; $info = Get-InfoReveil $pc }
+                    if ($info -and (Send-Reveil -PC $pc)) {
+                        $acces = $etatReveil
+                        $message += " Réveil envoyé (MAC $($info.Mac)) : revérifiez dans une minute."
+                    }
+                    else { $message += " MAC inconnue (aucun bail DHCP ni MAC mémorisée) : réveil impossible." }
+                }
+            }
             $null = Add-SuiviRow -PC $pc -Desc "" -Etat $acces -Action 'verifier'
-            $txtOut.Text = if ($acces -eq "PING K.O") { "Ping K.O : $pc est hors ligne." }
-                           else { "ADMIN$ K.O : pas d'accès administrateur sur $pc." }
+            $txtOut.Text = $message
             return
         }
 
@@ -761,11 +798,18 @@ $null = $btnTest.Add_Click({
         if (-not $version) { $version = $kOS.GetValue('ReleaseId') }
         $kOS.Close()
 
+        $info = Get-InfoReveil $pc
+        $ligneWol = if (-not $script:WolDisponible) { "Réveil (WoL) : indisponible ($($script:WolMotif))" }
+                    elseif ($info -and $info.Diffusion) { "Réveil (WoL) : MAC $($info.Mac), diffusion $($info.Diffusion)" }
+                    elseif ($info) { "Réveil (WoL) : MAC $($info.Mac) (mémorisée dans l'AD)" }
+                    else { "Réveil (WoL) : MAC inconnue pour l'instant" }
+
         $null = Add-SuiviRow -PC $pc -Desc "$val" -Etat "JOIGNABLE" -Action 'verifier'
         $txtOut.Text =
         "OK : $pc est joignable." + $nl +
         "Description actuelle : $val" + $nl +
-        "OS : $product $version"
+        "OS : $product $version" + $nl +
+        $ligneWol
     }
     catch {
         $null = Add-SuiviRow -PC $pc -Desc "" -Etat "ERREUR" -Action 'verifier'
@@ -899,20 +943,215 @@ foreach ($cible in @($form, $pnlHeader, $txtOut, $gridResults)) {
 }
 
 ############################################
+# Réveil des postes (Wake-on-LAN)
+############################################
+# Le magic packet vise la MAC du poste et part en diffusion dirigée sur le sous-réseau de l'étendue DHCP,
+# jamais vers l'IP du poste (elle change). Les MAC viennent des baux et réservations DHCP du serveur, et sont
+# mémorisées dans l'AD (attribut networkAddress de l'objet ordinateur) pour survivre à l'expiration des baux.
+
+$script:WolDisponible = $false
+$script:WolMotif      = ""
+$script:WolAttenteMax = 120        # secondes d'attente maximum des postes réveillés
+$script:ServeurDhcp   = $null      # $null = serveur DHCP local (l'outil tourne sur le DC), sinon nom du serveur
+$script:Etendues      = @()        # étendues DHCP : ScopeId, Masque, Diffusion
+$script:MacDhcp       = @{}        # NOM DE POSTE -> @{ Mac ; Diffusion } (baux et réservations en cours)
+$script:MacAD         = @{}        # NOM DE POSTE -> MAC mémorisée dans l'AD
+
+# Adresse de diffusion d'un sous-réseau (adresse OU inverse du masque)
+function Get-Diffusion {
+    param([string]$Adresse, [string]$Masque)
+
+    $a = [System.Net.IPAddress]::Parse($Adresse).GetAddressBytes()
+    $m = [System.Net.IPAddress]::Parse($Masque).GetAddressBytes()
+    $b = [byte[]](0..3 | ForEach-Object { [byte]($a[$_] -bor ((-bnot $m[$_]) -band 0xFF)) })
+    (New-Object System.Net.IPAddress(,$b)).ToString()
+}
+
+# Paramètres communs aux cmdlets DHCP (serveur local ou distant)
+function Get-ParamsDhcp {
+    if ($script:ServeurDhcp) { @{ ComputerName = $script:ServeurDhcp } } else { @{} }
+}
+
+# Détecte le DHCP : module présent et étendues lisibles, en local puis sur le serveur d'ouverture de session
+function Initialize-Wol {
+    if (-not $script:PrerequisOK) { $script:WolMotif = "prérequis non remplis"; return }
+    if (-not (Get-Module -ListAvailable -Name DhcpServer)) { $script:WolMotif = "module PowerShell DhcpServer absent (rôle DHCP ou outils RSAT DHCP)"; return }
+
+    try { $null = Import-Module DhcpServer -ErrorAction Stop }
+    catch { $script:WolMotif = "module DhcpServer inutilisable : $($_.Exception.Message)"; return }
+
+    $serveurs = @($null)
+    if ($env:LOGONSERVER) { $serveurs += ($env:LOGONSERVER -replace '^\\\\', '') }
+    foreach ($serveur in $serveurs) {
+        try {
+            $script:ServeurDhcp = $serveur
+            $params = Get-ParamsDhcp
+            $script:Etendues = @(Get-DhcpServerv4Scope @params -ErrorAction Stop | ForEach-Object {
+                $reseau = $_.ScopeId.IPAddressToString
+                $masque = $_.SubnetMask.IPAddressToString
+                [PSCustomObject]@{ ScopeId = $reseau; Masque = $masque; Diffusion = (Get-Diffusion $reseau $masque) }
+            })
+            if ($script:Etendues.Count -gt 0) { $script:WolDisponible = $true; $script:WolMotif = ""; return }
+            $script:WolMotif = "aucune étendue DHCP"
+        }
+        catch { $script:WolMotif = "DHCP inaccessible : $($_.Exception.Message)" }
+    }
+    $script:ServeurDhcp = $null
+}
+
+# Relit les baux et réservations DHCP, puis mémorise dans l'AD les MAC nouvelles ou changées
+function Update-CarteMac {
+    if (-not $script:WolDisponible) { return }
+
+    $carte = @{}
+    $params = Get-ParamsDhcp
+    foreach ($e in $script:Etendues) {
+        $entrees = @()
+        try { $entrees += @(Get-DhcpServerv4Lease @params -ScopeId $e.ScopeId -ErrorAction Stop) } catch { }
+        try { $entrees += @(Get-DhcpServerv4Reservation @params -ScopeId $e.ScopeId -ErrorAction Stop) } catch { }
+        foreach ($b in $entrees) {
+            # HostName pour un bail, Name pour une réservation ; nom court, en majuscules
+            $nom = ("$($b.HostName)$($b.Name)" -split '\.')[0].ToUpper()
+            if ($nom -and "$($b.ClientId)" -match '^([0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2}$') {
+                $carte[$nom] = @{ Mac = "$($b.ClientId)".ToLower(); Diffusion = $e.Diffusion }
+            }
+        }
+    }
+    $script:MacDhcp = $carte
+
+    try {
+        $memoire = @{}
+        foreach ($c in @(Get-ADComputer -Filter * -Properties networkAddress -ErrorAction Stop)) {
+            $nom = $c.Name.ToUpper()
+            $mac = @($c.networkAddress | Where-Object { "$_" -match '^([0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2}$' })[0]
+            if ($carte.ContainsKey($nom) -and $carte[$nom].Mac -ne $mac) {
+                try {
+                    Set-ADComputer -Identity $c -Replace @{ networkAddress = $carte[$nom].Mac } -ErrorAction Stop
+                    $mac = $carte[$nom].Mac
+                }
+                catch { }
+            }
+            if ($mac) { $memoire[$nom] = "$mac".ToLower() }
+        }
+        $script:MacAD = $memoire
+    }
+    catch { }
+}
+
+# MAC et diffusion connues pour un poste : DHCP d'abord, puis mémoire AD (diffusion : toutes les étendues)
+function Get-InfoReveil {
+    param([string]$PC)
+
+    $nom = $PC.ToUpper()
+    if ($script:MacDhcp.ContainsKey($nom)) { return $script:MacDhcp[$nom] }
+    if ($script:MacAD.ContainsKey($nom)) { return @{ Mac = $script:MacAD[$nom]; Diffusion = $null } }
+    $null
+}
+
+# Magic packet : 6 octets FF puis 16 fois la MAC, en UDP sur les ports 9 et 7
+function Send-MagicPacket {
+    param([string]$Mac, [string]$Diffusion)
+
+    $octets = @($Mac -split '[-:]' | ForEach-Object { [Convert]::ToByte($_, 16) })
+    if ($octets.Count -ne 6) { throw "MAC invalide : $Mac" }
+    $paquet = New-Object byte[] 102
+    for ($i = 0; $i -lt 6; $i++) { $paquet[$i] = 0xFF }
+    for ($i = 0; $i -lt 16; $i++) { for ($j = 0; $j -lt 6; $j++) { $paquet[6 + $i * 6 + $j] = $octets[$j] } }
+    foreach ($port in 9, 7) {
+        $udp = New-Object System.Net.Sockets.UdpClient
+        try {
+            $udp.EnableBroadcast = $true
+            [void]$udp.Send($paquet, $paquet.Length, $Diffusion, $port)
+        }
+        finally { $udp.Close() }
+    }
+}
+
+# Réveille un poste si sa MAC est connue ; $true si un paquet est parti
+function Send-Reveil {
+    param([string]$PC)
+
+    if (-not $script:WolDisponible) { return $false }
+    $info = Get-InfoReveil $PC
+    if (-not $info) { return $false }
+    $cibles = if ($info.Diffusion) { @($info.Diffusion) } else { @($script:Etendues | ForEach-Object { $_.Diffusion }) }
+    $envoye = $false
+    foreach ($diffusion in $cibles) {
+        try { Send-MagicPacket -Mac $info.Mac -Diffusion $diffusion; $envoye = $true } catch { }
+    }
+    $envoye
+}
+
+# Ping rapide (1 s) pour surveiller le retour des postes réveillés
+function Test-PingRapide {
+    param([string]$PC)
+
+    try { (New-Object System.Net.NetworkInformation.Ping).Send($PC, 1000).Status -eq 'Success' } catch { $false }
+}
+
+# Attend les postes réveillés (annulable) et traite chacun dès qu'il répond ; au bout du délai,
+# les postes toujours injoignables reprennent leur état réel (relançables avec « Réessayer les échecs »).
+# Lignes : éléments du lot (PC, Desc, Row) dont l'état est « réveil envoyé »
+function Wait-PostesReveilles {
+    param([array]$Lignes, [string]$Libelle)
+
+    $restantes = New-Object System.Collections.ArrayList
+    foreach ($l in $Lignes) { [void]$restantes.Add($l) }
+    $derniers = @{}
+    $limite = $script:WolAttenteMax
+    $chrono = [System.Diagnostics.Stopwatch]::StartNew()
+
+    while ($restantes.Count -gt 0 -and $chrono.Elapsed.TotalSeconds -lt $limite -and -not $script:CancelRequested) {
+        Set-Status ("$Libelle : attente des postes réveillés ({0} restant(s), {1} s)..." -f $restantes.Count, [int]($limite - $chrono.Elapsed.TotalSeconds))
+
+        # 5 s de pause en gardant l'interface réactive (bouton Annuler)
+        $fin = [DateTime]::Now.AddSeconds(5)
+        while ([DateTime]::Now -lt $fin -and -not $script:CancelRequested) {
+            [System.Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Milliseconds 100
+        }
+
+        foreach ($ligne in @($restantes)) {
+            if ($script:CancelRequested) { break }
+            if (-not (Test-PingRapide $ligne.PC)) { continue }
+            $acces = Test-AccesPoste $ligne.PC
+            if ($acces) { $derniers[$ligne.PC] = $acces; continue }      # démarré, mais ADMIN$ pas encore prêt
+            $etat = (Set-DescriptionPoste -PC $ligne.PC -Desc $ligne.Desc).Etat
+            Set-SuiviRowEtat $ligne.Row $etat
+            Show-SuiviRow $ligne.Row
+            $restantes.Remove($ligne)
+        }
+    }
+
+    foreach ($ligne in @($restantes)) {
+        $etat = if ($derniers.ContainsKey($ligne.PC)) { $derniers[$ligne.PC] } else { "PING K.O" }
+        Set-SuiviRowEtat $ligne.Row $etat
+    }
+}
+
+############################################
 # Rappel compte / domaine + blocage si prérequis non remplis
 ############################################
+
+Initialize-Wol
 
 $etatDomaine = if (-not $prerequis.Domaine) { "NON" }
                elseif ($prerequis.EstDC) { "OK ($($prerequis.NomDomaine), contrôleur de domaine)" }
                else { "OK ($($prerequis.NomDomaine))" }
 $etatAdmin   = if ($prerequis.Admin) { "OK" } else { "NON" }
 $etatModule  = if ($prerequis.ModuleAD) { "OK" } else { "NON" }
+$etatWol     = if ($script:WolDisponible) {
+                   $source = if ($script:ServeurDhcp) { "DHCP de $($script:ServeurDhcp)" } else { "DHCP local" }
+                   "disponible ($source, diffusion " + (@($script:Etendues | ForEach-Object { $_.Diffusion }) -join ', ') + ")"
+               }
+               else { "indisponible ($($script:WolMotif))" }
 
 $detailPrerequis =
     "Compte utilisé : $($prerequis.Compte)" + $nl + $nl +
     "Poste membre du domaine : $etatDomaine" + $nl +
     "Compte administrateur du domaine : $etatAdmin" + $nl +
-    "Module ActiveDirectory (RSAT) : $etatModule"
+    "Module ActiveDirectory (RSAT) : $etatModule" + $nl +
+    "Réveil des postes (Wake-on-LAN) : $etatWol"
 
 $lblSession.Text = if (-not $prerequis.Domaine) { "$($prerequis.Compte) · hors domaine" }
                    elseif ($prerequis.EstDC) { "$($prerequis.Compte) · $($prerequis.NomDomaine) (DC)" }
@@ -1259,6 +1498,14 @@ $null = $form.Add_Shown({
     if (Invoke-VerifMiseAJour) {
         $form.Close()
         return
+    }
+
+    # Carte des MAC (DHCP -> AD) : construite au lancement, puis rafraîchie avant chaque lot
+    if ($script:WolDisponible) {
+        Set-Status "Lecture des adresses MAC (DHCP, AD)..."
+        $form.Refresh()
+        Update-CarteMac
+        Set-Status "Prêt"
     }
 
     if (-not $script:PrerequisOK) {
