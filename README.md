@@ -35,9 +35,10 @@ Au lancement, l'outil vérifie sur la page Releases de ce dépôt si une version
 
 Le dossier qui contient l'exe doit être accessible en écriture ; sinon, l'outil indique où télécharger la nouvelle version.
 
-## 🧩 Fonctionnalités (v1.3)
+## 🧩 Fonctionnalités (v1.3.1)
 
 - Mise à jour automatique au lancement, avec confirmation
+- Liens « GitHub » et « À propos » dans le bandeau : page du projet, version, auteur
 - Vérification des prérequis au lancement (contrôleur de domaine ou poste du domaine, compte administrateur du domaine, module RSAT) : si un prérequis manque, un message l'indique et les fonctions de modification sont désactivées
 - Rappel du compte et du domaine utilisés dans la barre de statut
 - Auto-complétion des noms de postes depuis l'Active Directory
@@ -57,7 +58,8 @@ Le dossier qui contient l'exe doit être accessible en écriture ; sinon, l'outi
 | 1.0 | Gestion complète de l'interface (verrouillage, statuts, barre de progression) |
 | 1.1 | Refonte visuelle, suivi CSV en temps réel, confirmation avant traitement, rapport CSV optionnel |
 | 1.2 | Vérification des prérequis au lancement |
-| **1.3** | Mise à jour automatique, rappel compte/domaine, traitement CSV fiabilisé (fichier d'une seule ligne, lignes incomplètes, en-tête vérifié), nouvelle icône |
+| 1.3 | Mise à jour automatique, rappel compte/domaine, traitement CSV fiabilisé (fichier d'une seule ligne, lignes incomplètes, en-tête vérifié), nouvelle icône |
+| **1.3.1** | Liens « GitHub » et « À propos » dans le bandeau, icône de l'outil dans la barre de titre et la barre des tâches |
 
 Les versions antérieures à la 1.3 ne sont pas publiées dans ce dépôt.
 
