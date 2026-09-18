@@ -34,6 +34,7 @@ Ce fichier fait référence pour toute session Claude qui travaille sur ce dép�
 - Au lancement, l'exe lit `https://api.github.com/repos/vzeol/computer-description-tool/releases/latest` (sans identifiant) et compare le tag à sa propre version, celle passée à `ps2exe -version`.
 - Cette adresse est inscrite dans chaque exe installé : ne jamais renommer, déplacer ni passer en privé ce dépôt, sinon les exe installés ne se mettront plus à jour.
 - Chaque release doit avoir un tag `vX.Y` et contenir **un seul** fichier `.exe`, compilé avec `-version "X.Y.0.0"`. Les brouillons et pré-versions sont ignorés par l'outil.
+- Les notes de release s'affichent dans la fenêtre « Mise à jour disponible » des exe installés, qui ne comprend pas le markdown (seuls les `#` de titre sont retirés) et coupe à 800 caractères. Notes courtes, en simple liste à puces : pas de gras, pas de liens, pas de section « Installation » (sa place est le README).
 - Test de bout en bout, sur le DC : compiler le même script avec une version inférieure (ex. `-version "1.2.99.0"`) et le lancer. Il doit proposer la dernière release, se remplacer et redémarrer.
 
 ## Passage à une nouvelle version (uniquement sur demande)
