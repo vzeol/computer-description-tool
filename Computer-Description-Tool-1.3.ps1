@@ -350,9 +350,10 @@ $gridResults.AutoSizeColumnsMode = 'Fill'
 $null = $gridResults.Columns.Add('colPC', 'PC')
 $null = $gridResults.Columns.Add('colDesc', 'Description')
 $null = $gridResults.Columns.Add('colEtat', 'État')
-# Colonne État à la largeur de son contenu : jamais tronquée (LIGNE INVALIDE, DESC. TROP LONGUE...)
-$gridResults.Columns['colEtat'].AutoSizeMode = 'AllCells'
-$gridResults.Columns['colEtat'].MinimumWidth = 90
+# Colonne État : en mode remplissage comme les autres (sinon le séparateur Description | État n'est plus
+# déplaçable), mais jamais plus étroite que son libellé le plus long pour ne pas être tronquée
+$gridResults.Columns['colEtat'].FillWeight = 60
+$gridResults.Columns['colEtat'].MinimumWidth = [System.Windows.Forms.TextRenderer]::MeasureText("DESC. TROP LONGUE", $baseFont).Width + 16
 $form.Controls.Add($gridResults)
 
 # Couleurs de statut (lignes du suivi)
