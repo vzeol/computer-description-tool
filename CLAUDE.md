@@ -46,6 +46,12 @@ Ce fichier fait référence pour toute session Claude qui travaille sur ce dép�
 - Après des réveils, l'outil sonde les postes toutes les 5 s (`$script:WolAttenteMax` = 120 s) et traite chacun dès que ping et `ADMIN$` répondent ; ceux qui ne répondent pas reprennent leur état réel.
 - Diagnostic hors outil : un script `test-wol.ps1` (Bureau de l'utilisateur, hors dépôt) reproduit la chaîne DHCP → diffusion → magic packet et chronomètre le démarrage.
 
+## Signalement d'un problème
+
+- « Signaler un bug » (bandeau) ouvre une fenêtre avec un **rapport de diagnostic** (version, Windows, PowerShell, prérequis, réveil, dernier message, journal de la session) et trois actions : « Ouvrir le formulaire » (copie le rapport puis ouvre le formulaire Tally `$urlSignalement`, sans compte), « Copier le rapport », « Ticket GitHub ».
+- Le formulaire Tally reçoit via l'adresse les champs cachés `version`, `os`, `prerequis`, `wol` et `message` (noms à conserver dans le formulaire) ; le rapport complet est collé par l'utilisateur.
+- Un DC n'a en général pas de client mail : ne pas remplacer ce mécanisme par un `mailto:`. Aucune adresse mail ni identifiant personnel dans le code.
+
 ## Passage à une nouvelle version (uniquement sur demande)
 
 Deux niveaux, au choix de l'utilisateur :

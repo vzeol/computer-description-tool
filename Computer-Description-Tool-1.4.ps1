@@ -1288,6 +1288,10 @@ if (-not $script:PrerequisOK) {
 # Dépôt public d'où viennent les mises à jour : cette adresse est inscrite dans chaque exe installé
 $depotMaj = 'vzeol/computer-description-tool'
 
+# Formulaire de signalement d'un problème (Tally) : aucun compte nécessaire ; les champs cachés
+# version, os, prerequis, wol et message sont remplis par l'outil via l'adresse
+$urlSignalement = 'https://tally.so/r/RGOBal'
+
 [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
 
 # "v1.3" ou "1.3.0.0" -> [version] 1.3.0.0 (4 composantes, pour comparer le tag et la version de l'exe)
@@ -1482,7 +1486,7 @@ function New-LienEnTete {
 }
 
 $lnkAPropos = New-LienEnTete "À propos" "Version, auteur et lien vers la page GitHub"
-$lnkIssue   = New-LienEnTete "Signaler un bug" "Ouvrir un ticket sur la page GitHub de l'outil : bug, question ou idée d'amélioration (compte GitHub nécessaire)"
+$lnkIssue   = New-LienEnTete "Signaler un bug" "Prépare un rapport de diagnostic et ouvre le formulaire de signalement (sans compte) ou un ticket GitHub"
 $lnkGitHub  = New-LienEnTete "GitHub" "Ouvrir la page GitHub de l'outil (téléchargements, notes de version)"
 
 # Pendant un traitement CSV, les liens sont atténués et sans effet (un lien désactivé par Windows
@@ -1579,8 +1583,177 @@ function Show-APropos {
     try { [void]$dlg.ShowDialog($form) } finally { $dlg.Dispose() }
 }
 
+############################################
+# Signalement d'un problème
+############################################
+
+# Version de l'outil et système, pour le rapport et le formulaire
+function Get-InfoDiagnostic {
+    $version = if ($script:ExeActuel) { Format-Version $script:ExeActuel.Version } else { "développement (script .ps1)" }
+    $os = try {
+        $w = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+        "$($w.ProductName) $($w.DisplayVersion) (build $($w.CurrentBuild))"
+    }
+    catch { "inconnu" }
+    [PSCustomObject]@{ Version = $version; OS = $os; PowerShell = "$($PSVersionTable.PSVersion)" }
+}
+
+# Rapport de diagnostic complet : version, système, prérequis, réveil, dernier message et journal de la session
+function Get-RapportDiagnostic {
+    $info = Get-InfoDiagnostic
+    $journal = @($gridResults.Rows | ForEach-Object {
+        "  {0} | {1} | {2} | {3}" -f $_.Cells['colPC'].Value, $_.Cells['colAction'].Value, $_.Cells['colDesc'].Value, $_.Cells['colEtat'].Value
+    })
+    $lignes = @(
+        "Computer Description Tool - rapport de diagnostic"
+        "Date : $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+        "Version de l'outil : $($info.Version)"
+        "Windows : $($info.OS)"
+        "PowerShell : $($info.PowerShell)"
+        ""
+        $detailPrerequis
+        ""
+        "Dernier message affiché :"
+        "  " + ($txtOut.Text -replace "`r?`n", "`n  ")
+        ""
+        "Journal de la session ($($journal.Count) ligne(s)) : PC | Action | Description | État"
+    ) + $journal
+    $lignes -join $nl
+}
+
+# Adresse du formulaire avec les champs cachés remplis (courte : le rapport complet passe par le presse-papiers)
+function Get-UrlSignalement {
+    $info = Get-InfoDiagnostic
+    $message = ($txtOut.Text -replace "\s+", " ").Trim()
+    if ($message.Length -gt 300) { $message = $message.Substring(0, 300) + "…" }
+    $champs = [ordered]@{
+        version   = $info.Version
+        os        = $info.OS
+        prerequis = "domaine=$etatDomaine ; admin=$etatAdmin ; rsat=$etatModule"
+        wol       = if ($script:WolDisponible) { "disponible" } else { "indisponible ($($script:WolMotif))" }
+        message   = $message
+    }
+    $urlSignalement + "?" + (($champs.GetEnumerator() | ForEach-Object { "$($_.Key)=" + [Uri]::EscapeDataString("$($_.Value)") }) -join "&")
+}
+
+# Copie un texte dans le presse-papiers ; $false si impossible
+function Copy-Texte {
+    param([string]$Texte)
+
+    try { Set-Clipboard -Value $Texte -ErrorAction Stop; return $true } catch { }
+    try { [System.Windows.Forms.Clipboard]::SetText($Texte); return $true } catch { return $false }
+}
+
+# Fenêtre « Signaler un problème » : rapport de diagnostic, formulaire de signalement, ticket GitHub
+function New-FenetreSignalement {
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = "Signaler un problème"
+    $dlg.FormBorderStyle = 'FixedDialog'
+    $dlg.MaximizeBox = $false
+    $dlg.MinimizeBox = $false
+    $dlg.ShowInTaskbar = $false
+    $dlg.StartPosition = 'CenterParent'
+    $dlg.BackColor = [System.Drawing.Color]::White
+    $dlg.ForeColor = $textColor
+    $dlg.Font = $baseFont
+    if ($script:IconeApp) { $dlg.Icon = $script:IconeApp }
+
+    $largeur = 640
+    $marge = 20
+    # Variables de script : les gestionnaires de clic s'exécutent après la fin de cette fonction
+    $script:RapportDiag = Get-RapportDiagnostic
+
+    $texteIntro = "Un rapport de diagnostic a été préparé ci-dessous : vérifiez qu'il ne contient rien que vous ne souhaitez pas transmettre." +
+                  $nl + "« Ouvrir le formulaire » le copie dans le presse-papiers et ouvre le formulaire de signalement : décrivez le problème, " +
+                  "collez le rapport (Ctrl+V) et envoyez. Aucun compte n'est nécessaire. Avec un compte GitHub, vous pouvez aussi ouvrir un ticket."
+    $lblIntro = New-Object System.Windows.Forms.Label
+    $lblIntro.Text = $texteIntro
+    $lblIntro.AutoSize = $false
+    $l = $largeur - 2 * $marge
+    $h = [System.Windows.Forms.TextRenderer]::MeasureText($texteIntro, $baseFont, (New-Object System.Drawing.Size($l, 0)), [System.Windows.Forms.TextFormatFlags]::WordBreak).Height
+    $lblIntro.Size = New-Object System.Drawing.Size($l, ($h + 12))    # marge : la mesure sous-estime un texte de plusieurs lignes
+    $lblIntro.Location = New-Object System.Drawing.Point($marge, $marge)
+    $dlg.Controls.Add($lblIntro)
+
+    $txtRapport = New-Object System.Windows.Forms.TextBox
+    $txtRapport.Multiline = $true
+    $txtRapport.ReadOnly = $true
+    $txtRapport.ScrollBars = 'Both'
+    $txtRapport.WordWrap = $false
+    $txtRapport.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $txtRapport.BackColor = [System.Drawing.Color]::FromArgb(250,250,250)
+    $txtRapport.Text = $script:RapportDiag
+    $txtRapport.TabStop = $false     # sinon la zone prend le focus et tout le rapport apparaît sélectionné
+    $txtRapport.Location = New-Object System.Drawing.Point($marge, ($lblIntro.Bottom + 12))
+    $txtRapport.Size = New-Object System.Drawing.Size($l, 260)
+    $dlg.Controls.Add($txtRapport)
+
+    $y = $txtRapport.Bottom + 16
+
+    $script:LblEtatSignalement = New-Object System.Windows.Forms.Label
+    $script:LblEtatSignalement.AutoSize = $false
+    $script:LblEtatSignalement.Size = New-Object System.Drawing.Size($l, 20)
+    $script:LblEtatSignalement.Location = New-Object System.Drawing.Point($marge, ($y + 38))
+    $script:LblEtatSignalement.ForeColor = $accentColor
+    $dlg.Controls.Add($script:LblEtatSignalement)
+
+    $btnFormulaire = New-Object System.Windows.Forms.Button
+    $btnFormulaire.Text = "Ouvrir le formulaire"
+    $btnFormulaire.Size = New-Object System.Drawing.Size(150,30)
+    $btnFormulaire.Location = New-Object System.Drawing.Point($marge, $y)
+    Set-ButtonStyle -Button $btnFormulaire -Primary
+    $null = $btnFormulaire.Add_Click({
+        $copie = Copy-Texte $script:RapportDiag
+        Open-PageDepot -Url (Get-UrlSignalement)
+        $script:LblEtatSignalement.Text =if ($copie) { "Rapport copié : collez-le dans le formulaire (Ctrl+V)." }
+                        else { "Copie impossible : sélectionnez le rapport ci-dessus (Ctrl+A, Ctrl+C) et collez-le dans le formulaire." }
+    })
+    $dlg.Controls.Add($btnFormulaire)
+
+    $btnCopier = New-Object System.Windows.Forms.Button
+    $btnCopier.Text = "Copier le rapport"
+    $btnCopier.Size = New-Object System.Drawing.Size(130,30)
+    $btnCopier.Location = New-Object System.Drawing.Point(($btnFormulaire.Right + 10), $y)
+    Set-ButtonStyle -Button $btnCopier
+    $null = $btnCopier.Add_Click({
+        $script:LblEtatSignalement.Text =if (Copy-Texte $script:RapportDiag) { "Rapport copié dans le presse-papiers." }
+                        else { "Copie impossible : sélectionnez le rapport ci-dessus (Ctrl+A, Ctrl+C)." }
+    })
+    $dlg.Controls.Add($btnCopier)
+
+    $btnTicket = New-Object System.Windows.Forms.Button
+    $btnTicket.Text = "Ticket GitHub"
+    $btnTicket.Size = New-Object System.Drawing.Size(110,30)
+    $btnTicket.Location = New-Object System.Drawing.Point(($btnCopier.Right + 10), $y)
+    Set-ButtonStyle -Button $btnTicket
+    $null = $btnTicket.Add_Click({
+        $copie = Copy-Texte $script:RapportDiag
+        Open-PageDepot -Url "$urlDepot/issues/new"
+        $script:LblEtatSignalement.Text =if ($copie) { "Rapport copié : collez-le dans le ticket (Ctrl+V)." } else { "Copie impossible : sélectionnez le rapport ci-dessus (Ctrl+A, Ctrl+C)." }
+    })
+    $dlg.Controls.Add($btnTicket)
+
+    $btnFermer = New-Object System.Windows.Forms.Button
+    $btnFermer.Text = "Fermer"
+    $btnFermer.Size = New-Object System.Drawing.Size(100,30)
+    $btnFermer.Location = New-Object System.Drawing.Point(($largeur - $marge - 100), $y)
+    Set-ButtonStyle -Button $btnFermer
+    $btnFermer.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $dlg.Controls.Add($btnFermer)
+    $dlg.CancelButton = $btnFermer
+
+    $dlg.ClientSize = New-Object System.Drawing.Size($largeur, ($script:LblEtatSignalement.Bottom + 12))
+    $dlg.ActiveControl = $btnFormulaire
+    $dlg
+}
+
+function Show-Signalement {
+    $dlg = New-FenetreSignalement
+    try { [void]$dlg.ShowDialog($form) } finally { $dlg.Dispose() }
+}
+
 $null = $lnkGitHub.Add_LinkClicked({ if (-not $script:IsCsvRunning) { Open-PageDepot } })
-$null = $lnkIssue.Add_LinkClicked({ if (-not $script:IsCsvRunning) { Open-PageDepot -Url "$urlDepot/issues/new" } })
+$null = $lnkIssue.Add_LinkClicked({ if (-not $script:IsCsvRunning) { Show-Signalement } })
 $null = $lnkAPropos.Add_LinkClicked({ if (-not $script:IsCsvRunning) { Show-APropos } })
 
 
