@@ -19,9 +19,9 @@ $baseFont         = New-Object System.Drawing.Font("Segoe UI", 9)
 # Fenêtre
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Computer Description Tool"
-$form.ClientSize = New-Object System.Drawing.Size(540,564)
+$form.ClientSize = New-Object System.Drawing.Size(600,564)
 $form.StartPosition = "CenterScreen"
-$form.MinimumSize = New-Object System.Drawing.Size(460,444)
+$form.MinimumSize = New-Object System.Drawing.Size(560,444)
 $form.AutoSize = $false
 $form.BackColor = $bgColor
 $form.ForeColor = $textColor
@@ -365,8 +365,12 @@ $gridResults.EnableHeadersVisualStyles = $false
 $gridResults.RowTemplate.Height = 22
 $gridResults.AutoSizeColumnsMode = 'Fill'
 $null = $gridResults.Columns.Add('colPC', 'PC')
+$null = $gridResults.Columns.Add('colAction', 'Action')
 $null = $gridResults.Columns.Add('colDesc', 'Description')
 $null = $gridResults.Columns.Add('colEtat', 'État')
+# Colonne Action (origine de la ligne) : courte, jamais tronquée
+$gridResults.Columns['colAction'].FillWeight = 55
+$gridResults.Columns['colAction'].MinimumWidth = [System.Windows.Forms.TextRenderer]::MeasureText("Vérification", $baseFont).Width + 16
 # Colonne État : en mode remplissage comme les autres (sinon le séparateur Description | État n'est plus
 # déplaçable), mais jamais plus étroite que son libellé le plus long pour ne pas être tronquée
 $gridResults.Columns['colEtat'].FillWeight = 60
@@ -416,11 +420,24 @@ function Show-SuiviRow {
     [System.Windows.Forms.Application]::DoEvents()
 }
 
-# Ajoute une ligne au suivi. Action : 'csv' ou 'appliquer' (relançables en cas d'échec), 'verifier' (lecture seule)
+# Libellé affiché dans la colonne Action
+function Get-LibelleAction {
+    param([string]$Action)
+
+    switch ($Action) {
+        'csv'       { "Lot CSV" }
+        'appliquer' { "Application" }
+        'verifier'  { "Vérification" }
+        'reveil'    { "Réveil" }
+        default     { $Action }
+    }
+}
+
+# Ajoute une ligne au suivi. Action : 'csv' ou 'appliquer' (relançables en cas d'échec), 'verifier' et 'reveil' (lecture seule)
 function Add-SuiviRow {
     param([string]$PC, [string]$Desc, [string]$Etat, [string]$Action)
 
-    $rowIndex = $gridResults.Rows.Add($PC, $Desc, $Etat)
+    $rowIndex = $gridResults.Rows.Add($PC, (Get-LibelleAction $Action), $Desc, $Etat)
     $row = $gridResults.Rows[$rowIndex]
     $row.Tag = @{ Action = $Action; PC = $PC; Desc = $Desc }
     Set-SuiviRowEtat $row $Etat
@@ -590,6 +607,8 @@ function Invoke-LotPostes {
             }
 
             if ($ligne.Row) {
+                # Ligne relancée sur place : l'action affichée devient « Relance »
+                $ligne.Row.Cells['colAction'].Value = "Relance"
                 Set-SuiviRowEtat $ligne.Row $etat
                 Show-SuiviRow $ligne.Row
             }
@@ -649,6 +668,7 @@ function Export-RapportSiDemande {
         @($gridResults.Rows | ForEach-Object {
             [PSCustomObject]@{
                 PC          = "$($_.Cells['colPC'].Value)"
+                Action      = "$($_.Cells['colAction'].Value)"
                 Description = "$($_.Cells['colDesc'].Value)"
                 Etat        = "$($_.Cells['colEtat'].Value)"
             }
@@ -1428,12 +1448,14 @@ if ($script:ExeActuel) {
 }
 
 function Open-PageDepot {
+    param([string]$Url = $urlDepot)
+
     try {
-        Start-Process $urlDepot
+        Start-Process $Url
     }
     catch {
         [void][System.Windows.Forms.MessageBox]::Show(
-            "Impossible d'ouvrir le navigateur.${nl}${nl}Adresse : $urlDepot",
+            "Impossible d'ouvrir le navigateur.${nl}${nl}Adresse : $Url",
             "GitHub",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Warning
@@ -1460,13 +1482,14 @@ function New-LienEnTete {
 }
 
 $lnkAPropos = New-LienEnTete "À propos" "Version, auteur et lien vers la page GitHub"
+$lnkIssue   = New-LienEnTete "Signaler un bug" "Ouvrir un ticket sur la page GitHub de l'outil : bug, question ou idée d'amélioration (compte GitHub nécessaire)"
 $lnkGitHub  = New-LienEnTete "GitHub" "Ouvrir la page GitHub de l'outil (téléchargements, notes de version)"
 
 # Pendant un traitement CSV, les liens sont atténués et sans effet (un lien désactivé par Windows
 # serait dessiné en gris gravé, illisible sur le bandeau bleu)
 function Set-LiensEnTeteActifs {
     param([bool]$Actifs)
-    foreach ($lien in $lnkAPropos, $lnkGitHub) {
+    foreach ($lien in $lnkAPropos, $lnkIssue, $lnkGitHub) {
         $lien.LinkColor    = if ($Actifs) { [System.Drawing.Color]::White } else { [System.Drawing.Color]::FromArgb(120,170,220) }
         $lien.LinkBehavior = if ($Actifs) { 'HoverUnderline' } else { 'NeverUnderline' }
     }
@@ -1476,7 +1499,8 @@ function Set-LiensEnTeteActifs {
 function Set-PositionLiensEnTete {
     $y = [int](($pnlHeader.Height - $lnkAPropos.Height) / 2)
     $lnkAPropos.Location = New-Object System.Drawing.Point(($pnlHeader.ClientSize.Width - $lnkAPropos.Width - 20), $y)
-    $lnkGitHub.Location  = New-Object System.Drawing.Point(($lnkAPropos.Left - $lnkGitHub.Width - 14), $y)
+    $lnkIssue.Location   = New-Object System.Drawing.Point(($lnkAPropos.Left - $lnkIssue.Width - 14), $y)
+    $lnkGitHub.Location  = New-Object System.Drawing.Point(($lnkIssue.Left - $lnkGitHub.Width - 14), $y)
 }
 
 # Fenêtre « À propos » : nom, version, description, auteur, lien vers le dépôt
@@ -1556,6 +1580,7 @@ function Show-APropos {
 }
 
 $null = $lnkGitHub.Add_LinkClicked({ if (-not $script:IsCsvRunning) { Open-PageDepot } })
+$null = $lnkIssue.Add_LinkClicked({ if (-not $script:IsCsvRunning) { Open-PageDepot -Url "$urlDepot/issues/new" } })
 $null = $lnkAPropos.Add_LinkClicked({ if (-not $script:IsCsvRunning) { Show-APropos } })
 
 
