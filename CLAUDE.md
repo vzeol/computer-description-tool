@@ -15,7 +15,7 @@ Ce fichier fait référence pour toute session Claude qui travaille sur ce dép�
 
 ## Organisation du dépôt
 
-- `Computer-Description-Tool-X.Y.ps1` : script de la version actuelle (publiée ou en préparation).
+- `Computer-Description-Tool-X.Y.ps1` : script de la version actuelle (publiée ou en préparation). Il porte le numéro de la version mineure : les correctifs X.Y.Z gardent le même fichier.
 - `Computer Description Tool.exe` : exe compilé depuis ce script.
 - `icon.ico` : icône, à toujours passer à la compilation.
 - `archive/` : versions précédentes, figées telles qu'elles ont été publiées (à partir de la 1.3).
@@ -33,22 +33,28 @@ Ce fichier fait référence pour toute session Claude qui travaille sur ce dép�
 
 - Au lancement, l'exe lit `https://api.github.com/repos/vzeol/computer-description-tool/releases/latest` (sans identifiant) et compare le tag à sa propre version, celle passée à `ps2exe -version`.
 - Cette adresse est inscrite dans chaque exe installé : ne jamais renommer, déplacer ni passer en privé ce dépôt, sinon les exe installés ne se mettront plus à jour.
-- Chaque release doit avoir un tag `vX.Y` et contenir **un seul** fichier `.exe`, compilé avec `-version "X.Y.0.0"`. Les brouillons et pré-versions sont ignorés par l'outil.
+- Chaque release doit avoir un tag `vX.Y` (version mineure) ou `vX.Y.Z` (correctif) et contenir **un seul** fichier `.exe`, compilé avec `-version "X.Y.Z.0"` (Z = 0 pour une version mineure). Les brouillons et pré-versions sont ignorés par l'outil.
 - Les notes de release s'affichent dans la fenêtre « Mise à jour disponible » des exe installés, qui ne comprend pas le markdown (seuls les `#` de titre sont retirés) et coupe à 800 caractères. Notes courtes, en simple liste à puces : pas de gras, pas de liens, pas de section « Installation » (sa place est le README).
 - Test de bout en bout, sur le DC : compiler le même script avec une version inférieure (ex. `-version "1.2.99.0"`) et le lancer. Il doit proposer la dernière release, se remplacer et redémarrer.
 
 ## Passage à une nouvelle version (uniquement sur demande)
 
-1. Copier dans `archive/` la version publiée précédente, telle qu'elle est dans son tag (`git show vA.B:<fichier> > archive/<fichier>`), puis renommer le script de travail en `Computer-Description-Tool-X.Y.ps1` (`git mv`).
-2. Recompiler l'exe avec `-version "X.Y.0.0"`.
-3. Mettre à jour le README : section « Fonctionnalités (vX.Y) », nouvelle ligne dans « Historique des versions », « Prérequis » si besoin.
-4. Commit « Passage en vX.Y », tag annoté `vX.Y`, push, puis release GitHub avec l'exe en pièce jointe et des notes en français.
-5. Vérifier : le SHA256 de l'exe local est identique à celui de l'asset de la release (`gh release view vX.Y --json assets`), et l'exe lancé avec `-extract:<fichier>` redonne exactement le script.
+Deux niveaux, au choix de l'utilisateur :
+- **Correctif `X.Y.Z`** (1.3 → 1.3.1) : corrections et petites améliorations. Même script, pas d'archive.
+- **Version mineure `X.Y`** (1.3.2 → 1.4) : nouveautés plus importantes. Le script est archivé puis renommé.
+
+1. Version mineure seulement : copier dans `archive/` la dernière version publiée, telle qu'elle est dans son tag (`git show vA.B.C:<fichier> > archive/<fichier>`), puis renommer le script de travail en `Computer-Description-Tool-X.Y.ps1` (`git mv`).
+2. Recompiler l'exe avec `-version "X.Y.Z.0"`.
+3. Mettre à jour le README : titre et contenu de « Fonctionnalités (vX.Y[.Z]) », nouvelle ligne dans « Historique des versions », « Prérequis » si besoin.
+4. Commit « Passage en vX.Y[.Z] », tag annoté `vX.Y[.Z]`, push, puis release GitHub avec l'exe en pièce jointe et des notes en français.
+5. Vérifier : le SHA256 de l'exe local est identique à celui de l'asset de la release (`gh release view <tag> --json assets`), et l'exe lancé avec `-extract:<fichier>` redonne exactement le script.
+
+Chaque release est proposée automatiquement à tous les exe installés : ne publier qu'après le test de l'utilisateur sur le DC.
 
 ## Compilation
 
 ```powershell
-Invoke-ps2exe -inputFile .\Computer-Description-Tool-X.Y.ps1 -outputFile ".\Computer Description Tool.exe" -iconFile .\icon.ico -noConsole -title "Computer Description Tool" -product "Computer Description Tool" -copyright "vzeol" -version "X.Y.0.0"
+Invoke-ps2exe -inputFile .\Computer-Description-Tool-X.Y.ps1 -outputFile ".\Computer Description Tool.exe" -iconFile .\icon.ico -noConsole -title "Computer Description Tool" -product "Computer Description Tool" -copyright "vzeol" -version "X.Y.Z.0"
 ```
 
 - `-title` remplit la description visible de l'exe ; `-description` n'est pas affichée.
