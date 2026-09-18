@@ -60,4 +60,5 @@ Invoke-ps2exe -inputFile .\Computer-Description-Tool-X.Y.ps1 -outputFile ".\Comp
 - Dans une chaîne, écrire `${nl}` et non `$nl` devant une lettre accentuée : `$nlÊtes` est lu comme une seule variable.
 - La cible est Windows PowerShell 5.1, pas PowerShell 7. Exemple : un `Import-Csv` qui ne renvoie qu'une ligne donne un objet sans `.Count` ; toujours l'entourer de `@()`.
 - `gh` : si la commande n'est pas trouvée, utiliser le chemin complet `C:\Program Files\GitHub CLI\gh.exe`.
-- PSScriptAnalyzer remonte des avertissements connus et sans gravité : ShouldProcess sur les petites fonctions (`Set-*`, `Remove-RestesMiseAJour`), « pluriel » sur `Test-Prerequis`, `catch` vide volontaire dans `Get-SalleFromAD`.
+- PSScriptAnalyzer remonte des avertissements connus et sans gravité : ShouldProcess sur les petites fonctions (`Set-*`, `New-*`, `Remove-RestesMiseAJour`), « pluriel » sur `Test-Prerequis` et `Set-LiensEnTeteActifs`, `catch` vide volontaire dans `Get-SalleFromAD`.
+- La fenêtre principale est toujours au premier plan (`TopMost`) : tout ce qui ouvre une autre application (navigateur…) doit passer par `Open-PageDepot` ou suivre le même principe, sinon la fenêtre ouverte reste cachée derrière l'outil.

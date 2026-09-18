@@ -380,6 +380,7 @@ function Disable-UI {
     $btnApply.Enabled = $false
     $btnHelp.Enabled  = $false
     # $btnCSV.Enabled   = $false
+    Set-LiensEnTeteActifs $false
 }
 
 function Enable-UI {
@@ -387,6 +388,7 @@ function Enable-UI {
     $btnApply.Enabled = $true
     $btnHelp.Enabled  = $true
     $btnCSV.Enabled   = $true
+    Set-LiensEnTeteActifs $true
 }
 #Fonction StatusBar
 function Set-Status {
@@ -861,6 +863,157 @@ function Invoke-VerifMiseAJour {
 $script:ExeActuel = Get-ExeActuel
 if ($script:ExeActuel) { $form.Text += " $(Format-Version $script:ExeActuel.Version)" }
 
+############################################
+# Icône, lien GitHub et « À propos »
+############################################
+
+$urlDepot = "https://github.com/$depotMaj"
+
+# Icône de l'exe dans la barre de titre et la barre des tâches (absente si l'outil est lancé en .ps1)
+$script:IconeApp = $null
+if ($script:ExeActuel) {
+    try {
+        $script:IconeApp = [System.Drawing.Icon]::ExtractAssociatedIcon($script:ExeActuel.Chemin)
+        $form.Icon = $script:IconeApp
+    }
+    catch { $script:IconeApp = $null }
+}
+
+# La fenêtre principale est toujours au premier plan : on le suspend pour que le navigateur
+# s'ouvre devant, et il revient dès que l'utilisateur revient sur l'outil
+function Open-PageDepot {
+    try {
+        $form.TopMost = $false
+        Start-Process $urlDepot
+    }
+    catch {
+        [void][System.Windows.Forms.MessageBox]::Show(
+            "Impossible d'ouvrir le navigateur.${nl}${nl}Adresse : $urlDepot",
+            "GitHub",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        )
+    }
+}
+$null = $form.Add_Activated({ if (-not $form.TopMost) { $form.TopMost = $true } })
+
+# Lien blanc dans le bandeau d'en-tête
+function New-LienEnTete {
+    param([string]$Texte, [string]$Infobulle)
+    $lien = New-Object System.Windows.Forms.LinkLabel
+    $lien.Text = $Texte
+    $lien.AutoSize = $true
+    $lien.Font = $baseFont
+    $lien.BackColor = [System.Drawing.Color]::Transparent
+    $lien.LinkColor = [System.Drawing.Color]::White
+    $lien.VisitedLinkColor = [System.Drawing.Color]::White
+    $lien.ActiveLinkColor = [System.Drawing.Color]::FromArgb(205,225,245)
+    $lien.LinkBehavior = 'HoverUnderline'
+    $lien.Anchor = 'Top,Right'
+    $pnlHeader.Controls.Add($lien)
+    $toolTip.SetToolTip($lien, $Infobulle)
+    $lien
+}
+
+$lnkAPropos = New-LienEnTete "À propos" "Version, auteur et lien vers la page GitHub"
+$lnkGitHub  = New-LienEnTete "GitHub" "Ouvrir la page GitHub de l'outil (téléchargements, notes de version)"
+
+# Pendant un traitement CSV, les liens sont atténués et sans effet (un lien désactivé par Windows
+# serait dessiné en gris gravé, illisible sur le bandeau bleu)
+function Set-LiensEnTeteActifs {
+    param([bool]$Actifs)
+    foreach ($lien in $lnkAPropos, $lnkGitHub) {
+        $lien.LinkColor    = if ($Actifs) { [System.Drawing.Color]::White } else { [System.Drawing.Color]::FromArgb(120,170,220) }
+        $lien.LinkBehavior = if ($Actifs) { 'HoverUnderline' } else { 'NeverUnderline' }
+    }
+}
+
+# Liens alignés à droite du bandeau (appelé à l'affichage, quand la largeur est connue)
+function Set-PositionLiensEnTete {
+    $y = [int](($pnlHeader.Height - $lnkAPropos.Height) / 2)
+    $lnkAPropos.Location = New-Object System.Drawing.Point(($pnlHeader.ClientSize.Width - $lnkAPropos.Width - 20), $y)
+    $lnkGitHub.Location  = New-Object System.Drawing.Point(($lnkAPropos.Left - $lnkGitHub.Width - 14), $y)
+}
+
+# Fenêtre « À propos » : nom, version, description, auteur, lien vers le dépôt
+function New-FenetreAPropos {
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = "À propos"
+    $dlg.FormBorderStyle = 'FixedDialog'
+    $dlg.MaximizeBox = $false
+    $dlg.MinimizeBox = $false
+    $dlg.ShowInTaskbar = $false
+    $dlg.StartPosition = 'CenterParent'
+    $dlg.BackColor = [System.Drawing.Color]::White
+    $dlg.ForeColor = $textColor
+    $dlg.Font = $baseFont
+    if ($script:IconeApp) { $dlg.Icon = $script:IconeApp }
+
+    $largeur = 400
+    $x = 24
+    if ($script:IconeApp) {
+        $pic = New-Object System.Windows.Forms.PictureBox
+        $pic.Image = $script:IconeApp.ToBitmap()
+        $pic.Size = New-Object System.Drawing.Size(32,32)
+        $pic.Location = New-Object System.Drawing.Point(24,24)
+        $dlg.Controls.Add($pic)
+        $x = 72
+    }
+
+    # Libellé à la largeur disponible, avec retour à la ligne automatique
+    function Add-Libelle {
+        param([string]$Texte, [System.Drawing.Font]$Police, [int]$Haut)
+        $l = $largeur - $x - 24
+        $h = [System.Windows.Forms.TextRenderer]::MeasureText($Texte, $Police, (New-Object System.Drawing.Size($l, 0)), [System.Windows.Forms.TextFormatFlags]::WordBreak).Height
+        $lbl = New-Object System.Windows.Forms.Label
+        $lbl.Text = $Texte
+        $lbl.Font = $Police
+        $lbl.AutoSize = $false
+        $lbl.Size = New-Object System.Drawing.Size($l, $h)
+        $lbl.Location = New-Object System.Drawing.Point($x, $Haut)
+        $dlg.Controls.Add($lbl)
+        $lbl
+    }
+
+    $version = if ($script:ExeActuel) { "Version $(Format-Version $script:ExeActuel.Version)" } else { "Version de développement (script .ps1)" }
+
+    $lblNom    = Add-Libelle "Computer Description Tool" (New-Object System.Drawing.Font("Segoe UI", 12, [System.Drawing.FontStyle]::Bold)) 22
+    $lblVer    = Add-Libelle $version $baseFont ($lblNom.Bottom + 2)
+    $lblDesc   = Add-Libelle "Modifie la description des postes dans le registre et dans l'Active Directory, à l'unité ou par lot à partir d'un fichier CSV." $baseFont ($lblVer.Bottom + 14)
+    $lblAuteur = Add-Libelle "Auteur : vzeol" $baseFont ($lblDesc.Bottom + 10)
+
+    $lien = New-Object System.Windows.Forms.LinkLabel
+    $lien.Text = $urlDepot -replace '^https://', ''
+    $lien.AutoSize = $true
+    $lien.LinkColor = $accentColor
+    $lien.VisitedLinkColor = $accentColor
+    $lien.ActiveLinkColor = $accentColorHover
+    $lien.Location = New-Object System.Drawing.Point($x, ($lblAuteur.Bottom + 4))
+    $null = $lien.Add_LinkClicked({ Open-PageDepot })
+    $dlg.Controls.Add($lien)
+
+    $btnFermer = New-Object System.Windows.Forms.Button
+    $btnFermer.Text = "Fermer"
+    $btnFermer.Size = New-Object System.Drawing.Size(100,30)
+    Set-ButtonStyle -Button $btnFermer -Primary
+    $btnFermer.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $btnFermer.Location = New-Object System.Drawing.Point(($largeur - 100 - 24), ($lien.Bottom + 24))
+    $dlg.Controls.Add($btnFermer)
+    $dlg.AcceptButton = $btnFermer
+    $dlg.CancelButton = $btnFermer
+
+    $dlg.ClientSize = New-Object System.Drawing.Size($largeur, ($btnFermer.Bottom + 20))
+    $dlg
+}
+
+function Show-APropos {
+    $dlg = New-FenetreAPropos
+    try { [void]$dlg.ShowDialog($form) } finally { $dlg.Dispose() }
+}
+
+$null = $lnkGitHub.Add_LinkClicked({ if (-not $script:IsCsvRunning) { Open-PageDepot } })
+$null = $lnkAPropos.Add_LinkClicked({ if (-not $script:IsCsvRunning) { Show-APropos } })
+
 $null = $form.Topmost = $true
 
 $null = $form.Add_Shown({
@@ -879,6 +1032,9 @@ $null = $form.Add_Shown({
     # Grille de suivi
     $gridResults.Width  = $form.ClientSize.Width - $gridResults.Left - $margeDroite
     $gridResults.Height = $form.ClientSize.Height - $gridResults.Top - 20
+
+    # Liens « GitHub » et « À propos » à droite du bandeau
+    Set-PositionLiensEnTete
 
     # Mise à jour : la fenêtre est d'abord affichée, puis la recherche se fait (5 s maximum)
     $form.Refresh()
