@@ -42,6 +42,7 @@ Ce fichier fait référence pour toute session Claude qui travaille sur ce dép�
 - Le magic packet vise la **MAC** du poste et part en **diffusion dirigée** sur le sous-réseau de l'étendue DHCP (réseau OU inverse du masque). Jamais vers l'IP du poste (baux courts, IP changeantes) ni en `255.255.255.255` (ne franchit pas les routeurs et part par n'importe quelle interface).
 - Les MAC viennent des baux et réservations du **DHCP du DC** (module `DhcpServer`, local puis `$env:LOGONSERVER`), relues au lancement et avant chaque lot, et sont **mémorisées dans l'AD** (attribut `networkAddress` de l'objet ordinateur, réputé libre) pour survivre à l'expiration des baux.
 - Sans DHCP lisible, tout fonctionne comme avant, avec « réveil indisponible » dans l'info-bulle de la barre de statut.
+- Le réveil est un choix : case « Réveil automatique des postes éteints » (cochée par défaut si disponible) pour les lots et relances, et bouton « Réveiller le PC » pour le poste saisi. « Vérifier le PC » ne réveille jamais, il indique seulement si la MAC est connue.
 - Après des réveils, l'outil sonde les postes toutes les 5 s (`$script:WolAttenteMax` = 120 s) et traite chacun dès que ping et `ADMIN$` répondent ; ceux qui ne répondent pas reprennent leur état réel.
 - Diagnostic hors outil : un script `test-wol.ps1` (Bureau de l'utilisateur, hors dépôt) reproduit la chaîne DHCP → diffusion → magic packet et chronomètre le démarrage.
 

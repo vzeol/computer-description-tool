@@ -19,9 +19,9 @@ $baseFont         = New-Object System.Drawing.Font("Segoe UI", 9)
 # Fenêtre
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Computer Description Tool"
-$form.ClientSize = New-Object System.Drawing.Size(540,540)
+$form.ClientSize = New-Object System.Drawing.Size(540,564)
 $form.StartPosition = "CenterScreen"
-$form.MinimumSize = New-Object System.Drawing.Size(460,420)
+$form.MinimumSize = New-Object System.Drawing.Size(460,444)
 $form.AutoSize = $false
 $form.BackColor = $bgColor
 $form.ForeColor = $textColor
@@ -263,6 +263,22 @@ $btnRetry.Size = New-Object System.Drawing.Size($btnWidth,$btnHeight)
 $btnRetry.Enabled = $false
 $form.Controls.Add($btnRetry)
 
+# Bouton Réveiller le PC (Wake-on-LAN du poste saisi ; actif si le réveil est disponible)
+$btnWake = New-Object System.Windows.Forms.Button
+$btnWake.Text = "Réveiller le PC"
+$btnWake.Location = "$btnRetryX,150"
+$btnWake.Size = New-Object System.Drawing.Size($btnWidth,$btnHeight)
+$btnWake.Enabled = $false
+$form.Controls.Add($btnWake)
+
+# Case « réveil automatique » : pendant un lot ou une relance, les postes éteints dont la MAC est connue sont réveillés
+$chkWol = New-Object System.Windows.Forms.CheckBox
+$chkWol.Text = "Réveil automatique des postes éteints (Wake-on-LAN)"
+$chkWol.Location = "$btnLeftX,226"
+$chkWol.AutoSize = $true
+$chkWol.Enabled = $false
+$form.Controls.Add($chkWol)
+
 ############################################
 # Style boutons (flat / moderne)
 ############################################
@@ -297,13 +313,14 @@ Set-ButtonStyle -Button $btnApply -Primary
 Set-ButtonStyle -Button $btnHelp
 Set-ButtonStyle -Button $btnCSV -Primary
 Set-ButtonStyle -Button $btnRetry
+Set-ButtonStyle -Button $btnWake
 
 ############################################
 # Zone de résultat rapide (test / appliquer)
 ############################################
 
 $txtOut = New-Object System.Windows.Forms.TextBox
-$txtOut.Location = "20,230"
+$txtOut.Location = "20,254"
 $txtOut.Width = 280
 $txtOut.Height = 55
 $txtOut.Font = $baseFont
@@ -320,13 +337,13 @@ $form.Controls.Add($txtOut)
 
 $lblGrid = New-Object System.Windows.Forms.Label
 $lblGrid.Text = "Suivi de la session (Ctrl+C : copier la sélection) :"
-$lblGrid.Location = "20,295"
+$lblGrid.Location = "20,319"
 $lblGrid.AutoSize = $true
 $lblGrid.Anchor = 'Top,Left'
 $form.Controls.Add($lblGrid)
 
 $gridResults = New-Object System.Windows.Forms.DataGridView
-$gridResults.Location = "20,318"
+$gridResults.Location = "20,342"
 $gridResults.Anchor = 'Top,Left,Right,Bottom'
 $gridResults.ReadOnly = $true
 $gridResults.AllowUserToAddRows = $false
@@ -413,7 +430,7 @@ function Add-SuiviRow {
 
 # Lignes en échec que « Réessayer les échecs » peut relancer
 function Get-LignesAReessayer {
-    @($gridResults.Rows | Where-Object { $_.Tag -and $_.Tag.Action -ne 'verifier' -and $etatsReessayables -contains "$($_.Cells['colEtat'].Value)" })
+    @($gridResults.Rows | Where-Object { $_.Tag -and $_.Tag.Action -notin 'verifier', 'reveil' -and $etatsReessayables -contains "$($_.Cells['colEtat'].Value)" })
 }
 
 function Update-BoutonReessayer {
@@ -432,7 +449,9 @@ $toolTip.SetToolTip($btnTest,  "Teste l'accès (Ping + ADMIN$) et lit la descrip
 $toolTip.SetToolTip($btnApply,"Applique la description dans le registre et l'AD")
 $toolTip.SetToolTip($btnHelp, "Affiche l'aide sur le format CSV attendu")
 $toolTip.SetToolTip($btnCSV,  "Traite un fichier CSV et suit la progression en temps réel (le fichier peut aussi être déposé sur la fenêtre)")
-$toolTip.SetToolTip($btnRetry, "Relance les postes en échec du suivi ; les postes éteints dont la MAC est connue sont d'abord réveillés (Wake-on-LAN)")
+$toolTip.SetToolTip($btnRetry, "Relance les postes en échec du suivi (avec réveil des postes éteints si la case est cochée)")
+$toolTip.SetToolTip($btnWake,  "Envoie un réveil (Wake-on-LAN) au poste saisi, puis attend qu'il réponde")
+$toolTip.SetToolTip($chkWol,   "Pendant un lot ou une relance, un poste éteint dont la MAC est connue est réveillé, puis traité dès qu'il répond")
 
 ############################################
 # Fonction
@@ -444,6 +463,7 @@ function Disable-UI {
     $btnApply.Enabled = $false
     $btnHelp.Enabled  = $false
     $btnRetry.Enabled = $false
+    $btnWake.Enabled  = $false
     # $btnCSV reste actif : il devient « Annuler »
     Set-LiensEnTeteActifs $false
 }
@@ -453,6 +473,7 @@ function Enable-UI {
     $btnApply.Enabled = $true
     $btnHelp.Enabled  = $true
     $btnCSV.Enabled   = $true
+    $btnWake.Enabled  = $script:WolDisponible
     Set-LiensEnTeteActifs $true
     Update-BoutonReessayer
 }
@@ -539,7 +560,8 @@ function Invoke-LotPostes {
     $reveillees = @()
 
     try {
-        if ($script:WolDisponible) {
+        $reveilActif = $script:WolDisponible -and $chkWol.Checked
+        if ($reveilActif) {
             Set-Status "$Libelle : lecture des adresses MAC (DHCP, AD)..."
             Update-CarteMac
         }
@@ -561,7 +583,7 @@ function Invoke-LotPostes {
             }
             else {
                 $etat = (Set-DescriptionPoste -PC $ligne.PC -Desc $ligne.Desc).Etat
-                if ($etat -eq "PING K.O" -and (Send-Reveil -PC $ligne.PC)) {
+                if ($etat -eq "PING K.O" -and $reveilActif -and (Send-Reveil -PC $ligne.PC)) {
                     $etat = $etatReveil
                     $reveillees += $ligne
                 }
@@ -655,7 +677,7 @@ function Show-BilanLot {
 
     $nbEchecs = (Get-LignesAReessayer).Count
     if ($nbEchecs -gt 0) {
-        $texte += $nl + $(if ($script:WolDisponible) { "$nbEchecs poste(s) en échec : « Réessayer les échecs » les réveille (MAC connue) puis les relance." }
+        $texte += $nl + $(if ($script:WolDisponible -and $chkWol.Checked) { "$nbEchecs poste(s) en échec : « Réessayer les échecs » les réveille (MAC connue) puis les relance." }
                           else { "$nbEchecs poste(s) en échec : « Réessayer les échecs » les relance (par exemple une fois les postes allumés)." })
     }
 
@@ -775,11 +797,8 @@ $null = $btnTest.Add_Click({
                 if ($script:WolDisponible) {
                     $info = Get-InfoReveil $pc
                     if (-not $info) { Update-CarteMac; $info = Get-InfoReveil $pc }
-                    if ($info -and (Send-Reveil -PC $pc)) {
-                        $acces = $etatReveil
-                        $message += " Réveil envoyé (MAC $($info.Mac)) : revérifiez dans une minute."
-                    }
-                    else { $message += " MAC inconnue (aucun bail DHCP ni MAC mémorisée) : réveil impossible." }
+                    $message += if ($info) { " MAC connue ($($info.Mac)) : « Réveiller le PC » peut le démarrer." }
+                                else { " MAC inconnue (aucun bail DHCP ni MAC mémorisée) : réveil impossible." }
                 }
             }
             $null = Add-SuiviRow -PC $pc -Desc "" -Etat $acces -Action 'verifier'
@@ -895,6 +914,64 @@ $null = $btnRetry.Add_Click({
         $txtOut.Text = "Erreur : $($_.Exception.Message)"
     }
     finally {
+        Set-Status "Prêt"
+    }
+})
+
+# Action Réveiller le PC : réveil du poste saisi, puis attente de sa réponse (rien n'est modifié)
+$null = $btnWake.Add_Click({
+    if ($script:IsCsvRunning) { return }
+
+    $pc = $txtPC.Text.Trim()
+    if ($pc -eq "") {
+        $txtOut.Text = "Aucun PC spécifié."
+        return
+    }
+
+    try {
+        Set-Status "Réveil de $pc..."
+        $form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+
+        if (Test-PingRapide $pc) {
+            $null = Add-SuiviRow -PC $pc -Desc "" -Etat "JOIGNABLE" -Action 'reveil'
+            $txtOut.Text = "$pc répond déjà au ping : pas besoin de le réveiller."
+            return
+        }
+
+        $info = Get-InfoReveil $pc
+        if (-not $info) { Update-CarteMac; $info = Get-InfoReveil $pc }
+        if (-not $info -or -not (Send-Reveil -PC $pc)) {
+            $null = Add-SuiviRow -PC $pc -Desc "" -Etat "PING K.O" -Action 'reveil'
+            $txtOut.Text = "Réveil impossible : MAC de $pc inconnue (aucun bail DHCP ni MAC mémorisée dans l'AD)."
+            return
+        }
+
+        $ligne = [PSCustomObject]@{ Row = (Add-SuiviRow -PC $pc -Desc "" -Etat $etatReveil -Action 'reveil'); PC = $pc; Desc = "" }
+        $txtOut.Text = "Réveil envoyé à $pc (MAC $($info.Mac)). Attente de sa réponse..."
+        $form.Cursor = [System.Windows.Forms.Cursors]::Default
+
+        # Attente comme pour un lot : interface verrouillée, « Annuler » disponible
+        $script:IsCsvRunning = $true
+        $script:CancelRequested = $false
+        Set-CsvButtonMode $true
+        Disable-UI
+        $chrono = [System.Diagnostics.Stopwatch]::StartNew()
+        try { Wait-PostesReveilles -Lignes @($ligne) -Libelle "Réveil de $pc" -SansModification }
+        finally {
+            $script:IsCsvRunning = $false
+            $script:CancelRequested = $false
+            Set-CsvButtonMode $false
+            Enable-UI
+        }
+
+        $txtOut.Text = if ("$($ligne.Row.Cells['colEtat'].Value)" -eq "JOIGNABLE") { "$pc répond après $([int]$chrono.Elapsed.TotalSeconds) s." }
+                       else { "$pc ne répond toujours pas après $([int]$chrono.Elapsed.TotalSeconds) s (réveil envoyé à la MAC $($info.Mac))." }
+    }
+    catch {
+        $txtOut.Text = "Erreur : $($_.Exception.Message)"
+    }
+    finally {
+        $form.Cursor = [System.Windows.Forms.Cursors]::Default
         Set-Status "Prêt"
     }
 })
@@ -1093,7 +1170,7 @@ function Test-PingRapide {
 # les postes toujours injoignables reprennent leur état réel (relançables avec « Réessayer les échecs »).
 # Lignes : éléments du lot (PC, Desc, Row) dont l'état est « réveil envoyé »
 function Wait-PostesReveilles {
-    param([array]$Lignes, [string]$Libelle)
+    param([array]$Lignes, [string]$Libelle, [switch]$SansModification)
 
     $restantes = New-Object System.Collections.ArrayList
     foreach ($l in $Lignes) { [void]$restantes.Add($l) }
@@ -1116,7 +1193,7 @@ function Wait-PostesReveilles {
             if (-not (Test-PingRapide $ligne.PC)) { continue }
             $acces = Test-AccesPoste $ligne.PC
             if ($acces) { $derniers[$ligne.PC] = $acces; continue }      # démarré, mais ADMIN$ pas encore prêt
-            $etat = (Set-DescriptionPoste -PC $ligne.PC -Desc $ligne.Desc).Etat
+            $etat = if ($SansModification) { "JOIGNABLE" } else { (Set-DescriptionPoste -PC $ligne.PC -Desc $ligne.Desc).Etat }
             Set-SuiviRowEtat $ligne.Row $etat
             Show-SuiviRow $ligne.Row
             $restantes.Remove($ligne)
@@ -1157,6 +1234,15 @@ $lblSession.Text = if (-not $prerequis.Domaine) { "$($prerequis.Compte) · hors 
                    elseif ($prerequis.EstDC) { "$($prerequis.Compte) · $($prerequis.NomDomaine) (DC)" }
                    else { "$($prerequis.Compte) · $($prerequis.NomDomaine)" }
 $lblSession.ToolTipText = $detailPrerequis
+
+# Réveil : case cochée et bouton actif seulement si le réveil est disponible
+$chkWol.Enabled  = $script:WolDisponible
+$chkWol.Checked  = $script:WolDisponible
+$btnWake.Enabled = $script:WolDisponible
+if (-not $script:WolDisponible) {
+    $toolTip.SetToolTip($chkWol,  "Réveil indisponible : $($script:WolMotif)")
+    $toolTip.SetToolTip($btnWake, "Réveil indisponible : $($script:WolMotif)")
+}
 
 if (-not $script:PrerequisOK) {
     $btnTest.Enabled  = $false
