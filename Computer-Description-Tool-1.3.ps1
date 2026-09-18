@@ -186,20 +186,33 @@ $lblDesc.Location = "20,110"
 $lblDesc.AutoSize = $true
 $form.Controls.Add($lblDesc)
 
-# Champ Desc
+# Champ Desc (48 caractères maximum : limite Windows de la description d'un poste)
 $txtDesc = New-Object System.Windows.Forms.TextBox
 $txtDesc.Location = "130,107"
 $txtDesc.Width = 180
 $txtDesc.Font = $baseFont
+$txtDesc.MaxLength = 48
 $form.Controls.Add($txtDesc)
 $txtDesc.Anchor = 'Top,Left,Right'
+
+# Entrée dans la description = Appliquer
+$null = $txtDesc.Add_KeyDown({
+    if ($_.KeyCode -eq "Enter") {
+        $_.SuppressKeyPress = $true
+        if ($btnApply.Enabled) { $btnApply.PerformClick() }
+    }
+    $null
+})
 
 # Saut de ligne standard Windows (WinForms)
 $nl = [Environment]::NewLine
 
-#Flag bouton annuler
+# Traitement par lot en cours (CSV ou nouvelle tentative) et demande d'annulation
 $script:IsCsvRunning = $false
 $script:CancelRequested = $false
+
+# Dernier CSV traité : sert à nommer le rapport et le fichier des échecs
+$script:CsvPath = $null
 
 
 ############################################
@@ -212,6 +225,7 @@ $btnHeight = 30
 $btnLeftX  = 20
 $btnGap    = 10
 $btnRightX = $btnLeftX + $btnWidth + $btnGap
+$btnRetryX = $btnRightX + $btnWidth + $btnGap
 
 # Bouton Vérifier le PC
 $btnTest = New-Object System.Windows.Forms.Button
@@ -240,6 +254,14 @@ $btnCSV.Text = "Traiter CSV"
 $btnCSV.Location = "$btnRightX,188"
 $btnCSV.Size = New-Object System.Drawing.Size($btnWidth,$btnHeight)
 $form.Controls.Add($btnCSV)
+
+# Bouton Réessayer les échecs (actif dès que le suivi contient des postes en échec)
+$btnRetry = New-Object System.Windows.Forms.Button
+$btnRetry.Text = "Réessayer les échecs"
+$btnRetry.Location = "$btnRetryX,188"
+$btnRetry.Size = New-Object System.Drawing.Size($btnWidth,$btnHeight)
+$btnRetry.Enabled = $false
+$form.Controls.Add($btnRetry)
 
 ############################################
 # Style boutons (flat / moderne)
@@ -274,6 +296,7 @@ Set-ButtonStyle -Button $btnTest
 Set-ButtonStyle -Button $btnApply -Primary
 Set-ButtonStyle -Button $btnHelp
 Set-ButtonStyle -Button $btnCSV -Primary
+Set-ButtonStyle -Button $btnRetry
 
 ############################################
 # Zone de résultat rapide (test / appliquer)
@@ -296,7 +319,7 @@ $form.Controls.Add($txtOut)
 ############################################
 
 $lblGrid = New-Object System.Windows.Forms.Label
-$lblGrid.Text = "Suivi du traitement :"
+$lblGrid.Text = "Suivi de la session (Ctrl+C : copier la sélection) :"
 $lblGrid.Location = "20,295"
 $lblGrid.AutoSize = $true
 $lblGrid.Anchor = 'Top,Left'
@@ -311,7 +334,8 @@ $gridResults.AllowUserToDeleteRows = $false
 $gridResults.AllowUserToResizeRows = $false
 $gridResults.RowHeadersVisible = $false
 $gridResults.SelectionMode = 'FullRowSelect'
-$gridResults.MultiSelect = $false
+$gridResults.MultiSelect = $true
+$gridResults.ClipboardCopyMode = 'EnableAlwaysIncludeHeaderText'
 $gridResults.BackgroundColor = [System.Drawing.Color]::White
 $gridResults.BorderStyle = 'FixedSingle'
 $gridResults.GridColor = [System.Drawing.Color]::FromArgb(230,230,230)
@@ -326,35 +350,65 @@ $gridResults.AutoSizeColumnsMode = 'Fill'
 $null = $gridResults.Columns.Add('colPC', 'PC')
 $null = $gridResults.Columns.Add('colDesc', 'Description')
 $null = $gridResults.Columns.Add('colEtat', 'État')
-$gridResults.Columns['colEtat'].FillWeight = 55
+# Colonne État à la largeur de son contenu : jamais tronquée (LIGNE INVALIDE, DESC. TROP LONGUE...)
+$gridResults.Columns['colEtat'].AutoSizeMode = 'AllCells'
+$gridResults.Columns['colEtat'].MinimumWidth = 90
 $form.Controls.Add($gridResults)
 
-# Couleurs de statut (lignes du suivi CSV)
+# Couleurs de statut (lignes du suivi)
 $colorOkBack   = [System.Drawing.Color]::FromArgb(223,246,221)
 $colorOkFore   = [System.Drawing.Color]::FromArgb(30,90,30)
 $colorKoBack   = [System.Drawing.Color]::FromArgb(253,231,230)
 $colorKoFore   = [System.Drawing.Color]::FromArgb(140,20,20)
 
+# États affichés en vert ; les autres (PING K.O, ADMIN$ K.O, ERREUR, LIGNE INVALIDE, DESC. TROP LONGUE) en rouge
+$etatsOK = @('OK', 'JOIGNABLE')
+
+# Échecs qu'une nouvelle tentative peut résoudre (poste éteint, accès refusé, erreur passagère)
+$etatsReessayables = @('PING K.O', 'ADMIN$ K.O', 'ERREUR')
+
+function Set-SuiviRowEtat {
+    param($Row, [string]$Etat)
+
+    $Row.Cells['colEtat'].Value = $Etat
+    if ($etatsOK -contains $Etat) {
+        $Row.DefaultCellStyle.BackColor = $colorOkBack
+        $Row.DefaultCellStyle.ForeColor = $colorOkFore
+    }
+    else {
+        $Row.DefaultCellStyle.BackColor = $colorKoBack
+        $Row.DefaultCellStyle.ForeColor = $colorKoFore
+    }
+}
+
+# Fait défiler jusqu'à la ligne sans la sélectionner : le bleu de sélection masquerait sa couleur d'état
+function Show-SuiviRow {
+    param($Row)
+
+    $gridResults.ClearSelection()
+    $gridResults.FirstDisplayedScrollingRowIndex = $Row.Index
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
+# Ajoute une ligne au suivi. Action : 'csv' ou 'appliquer' (relançables en cas d'échec), 'verifier' (lecture seule)
 function Add-SuiviRow {
-    param([string]$PC, [string]$Desc, [string]$Etat)
+    param([string]$PC, [string]$Desc, [string]$Etat, [string]$Action)
 
     $rowIndex = $gridResults.Rows.Add($PC, $Desc, $Etat)
     $row = $gridResults.Rows[$rowIndex]
+    $row.Tag = @{ Action = $Action; PC = $PC; Desc = $Desc }
+    Set-SuiviRowEtat $row $Etat
+    Show-SuiviRow $row
+    $row
+}
 
-    if ($Etat -eq "OK") {
-        $row.DefaultCellStyle.BackColor = $colorOkBack
-        $row.DefaultCellStyle.ForeColor = $colorOkFore
-    }
-    else {
-        $row.DefaultCellStyle.BackColor = $colorKoBack
-        $row.DefaultCellStyle.ForeColor = $colorKoFore
-    }
+# Lignes en échec que « Réessayer les échecs » peut relancer
+function Get-LignesAReessayer {
+    @($gridResults.Rows | Where-Object { $_.Tag -and $_.Tag.Action -ne 'verifier' -and $etatsReessayables -contains "$($_.Cells['colEtat'].Value)" })
+}
 
-    # La grille sélectionne d'office la 1re ligne : le bleu de sélection masquerait sa couleur d'état
-    $gridResults.ClearSelection()
-
-    $gridResults.FirstDisplayedScrollingRowIndex = $rowIndex
-    [System.Windows.Forms.Application]::DoEvents()
+function Update-BoutonReessayer {
+    $btnRetry.Enabled = $script:PrerequisOK -and -not $script:IsCsvRunning -and (Get-LignesAReessayer).Count -gt 0
 }
 
 ############################################
@@ -363,12 +417,13 @@ function Add-SuiviRow {
 
 # Tooltips
 $toolTip.SetToolTip($txtPC,   "Nom du poste tel qu'il apparaît dans l'Active Directory")
-$toolTip.SetToolTip($txtDesc, "Description à appliquer au poste")
+$toolTip.SetToolTip($txtDesc, "Description à appliquer au poste (48 caractères maximum, limite Windows). Entrée = Appliquer")
 
 $toolTip.SetToolTip($btnTest,  "Teste l'accès (Ping + ADMIN$) et lit la description actuelle")
 $toolTip.SetToolTip($btnApply,"Applique la description dans le registre et l'AD")
 $toolTip.SetToolTip($btnHelp, "Affiche l'aide sur le format CSV attendu")
-$toolTip.SetToolTip($btnCSV,  "Traite un fichier CSV et suit la progression en temps réel")
+$toolTip.SetToolTip($btnCSV,  "Traite un fichier CSV et suit la progression en temps réel (le fichier peut aussi être déposé sur la fenêtre)")
+$toolTip.SetToolTip($btnRetry, "Relance les postes en échec du suivi (par exemple une fois les postes allumés)")
 
 ############################################
 # Fonction
@@ -379,7 +434,8 @@ function Disable-UI {
     $btnTest.Enabled  = $false
     $btnApply.Enabled = $false
     $btnHelp.Enabled  = $false
-    # $btnCSV.Enabled   = $false
+    $btnRetry.Enabled = $false
+    # $btnCSV reste actif : il devient « Annuler »
     Set-LiensEnTeteActifs $false
 }
 
@@ -389,6 +445,7 @@ function Enable-UI {
     $btnHelp.Enabled  = $true
     $btnCSV.Enabled   = $true
     Set-LiensEnTeteActifs $true
+    Update-BoutonReessayer
 }
 #Fonction StatusBar
 function Set-Status {
@@ -411,128 +468,186 @@ function Set-CsvButtonMode {
 }
 
 ############################################
-# Action bouton
+# Accès aux postes et traitement par lot
 ############################################
 
-# Action Aide CSV
-$null = $btnHelp.Add_Click({
-    [void][System.Windows.Forms.MessageBox]::Show(
-"FORMAT CSV OBLIGATOIRE :
+# Ping puis partage ADMIN$ : $null si le poste est accessible, sinon l'état d'échec
+function Test-AccesPoste {
+    param([string]$PC)
 
-PC;Description
-NOM_DU_POSTE_1;Description du poste 1
-NOM_DU_POSTE_2;Description du poste 2
+    if (!(Test-Connection -ComputerName $PC -Count 1 -Quiet)) { return "PING K.O" }
+    if (!(Test-Path "\\$PC\ADMIN$")) { return "ADMIN$ K.O" }
+    $null
+}
 
-RÈGLES :
-- Séparateur : point-virgule (;)
-- Première ligne obligatoire
-- Un PC par ligne
-- Ligne sans PC ou sans description : signalée « LIGNE INVALIDE », non appliquée",
-"Aide – Format CSV",
-[System.Windows.Forms.MessageBoxButtons]::OK,
-[System.Windows.Forms.MessageBoxIcon]::Information
-    )
-})
+# Écrit la description dans le registre du poste (relue pour contrôle) puis dans l'AD.
+# Renvoie l'état (OK, PING K.O, ADMIN$ K.O, ERREUR) et, pour ERREUR, l'étape en cause et le message
+function Set-DescriptionPoste {
+    param([string]$PC, [string]$Desc)
 
-# Action Verifier le PC
-$null = $btnTest.Add_Click({
-    $pc = $txtPC.Text.Trim()
+    $acces = Test-AccesPoste $PC
+    if ($acces) { return [PSCustomObject]@{ Etat = $acces; Detail = "" } }
 
-    if ($pc -eq "") {
-        $txtOut.Text = "Aucun PC spécifié."
-        return
-    }
-
+    $etape = "Registre"
     try {
-        if (!(Test-Connection -ComputerName $pc -Count 1 -Quiet)) {
-            $txtOut.Text = "Ping K.O : PC hors ligne."
-            return
-        }
-
-        if (!(Test-Path "\\$pc\ADMIN$")) {
-            $txtOut.Text = "ADMIN$ K.O : pas d'accès administrateur."
-            return
-        }
-
-        $r=[Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine',$pc)
-        $k=$r.OpenSubKey('SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters',$false)
-        $val=$k.GetValue('srvcomment')
+        $r = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $PC)
+        $k = $r.OpenSubKey('SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters', $true)
+        $k.SetValue('srvcomment', $Desc, 'String')
+        $relu = $k.GetValue('srvcomment')
         $k.Close()
+        if ("$relu" -ne $Desc) { throw "valeur relue « $relu » différente de la valeur écrite" }
 
-        $kOS = $r.OpenSubKey('SOFTWARE\Microsoft\Windows NT\CurrentVersion',$false)
-        $product = $kOS.GetValue('ProductName')
-        $version = $kOS.GetValue('DisplayVersion')
-        if (-not $version) {
-        $version = $kOS.GetValue('ReleaseId')
-                            }
-
-        $kOS.Close()
-
-
-        $txtOut.Text =
-        "OK : PC joignable." + $nl +
-        "Description actuelle : $val" + $nl +
-        "OS : $product $version"
-    }
-    catch {
-        $txtOut.Text = "Erreur : $($_.Exception.Message)"
-    }
-})
-
-# Action Appliquer
-$null = $btnApply.Add_Click({
-    try {
-        $pc = $txtPC.Text
-        $desc = $txtDesc.Text
-
-        if ($pc -eq "" -or $desc -eq "") {
-            $txtOut.Text = "Champs incomplets."
-            return
-        }
-
-        # Écriture registre
-        $r=[Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine',$pc)
-        $k=$r.OpenSubKey('SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters',$true)
-        $k.SetValue('srvcomment',$desc,'String')
-        $k.Close()
-
-        # Mise à jour description AD
+        $etape = "AD"
         $null = Import-Module ActiveDirectory -ErrorAction Stop
-        Set-ADComputer -Identity $pc -Description $desc
+        Set-ADComputer -Identity $PC -Description $Desc
 
-        # Lecture pour validation
-        $k2=$r.OpenSubKey('SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters',$false)
-        $val=$k2.GetValue('srvcomment')
-        $k2.Close()
-
-        $txtOut.Text = "Description appliquée : Registre = '$val' / AD = OK"
+        [PSCustomObject]@{ Etat = "OK"; Detail = "" }
     }
     catch {
-        $txtOut.Text = "Erreur : $($_.Exception.Message)"
+        $detail = "$etape : $($_.Exception.Message)"
+        if ($etape -eq "AD") { $detail += " (le registre du poste, lui, a été mis à jour)" }
+        [PSCustomObject]@{ Etat = "ERREUR"; Detail = $detail }
     }
-})
+}
 
-# Action Traiter CSV
-$null = $btnCSV.Add_Click({
+# Traite une liste de postes avec progression et annulation ; utilisé par « Traiter CSV » et « Réessayer les échecs ».
+# Chaque élément : PC, Desc, Action et Row (ligne du suivi à mettre à jour, ou $null pour en ajouter une)
+function Invoke-LotPostes {
+    param([array]$Lignes, [string]$Libelle)
 
-    # Si déjà en cours → on demande l'annulation
-    if ($script:IsCsvRunning) {
-        $script:CancelRequested = $true
-        Set-Status "Annulation demandée..."
-        return
+    $script:IsCsvRunning = $true
+    $script:CancelRequested = $false
+    Set-CsvButtonMode $true
+    Disable-UI
+    $progressBar.Visible = $true
+    $progressBar.Value = 0
+
+    $nbOK = 0
+    $nbKO = 0
+    $index = 0
+    $total = $Lignes.Count
+
+    try {
+        foreach ($ligne in $Lignes) {
+
+            if ($script:CancelRequested) {
+                Set-Status "$Libelle : annulé ($index / $total)"
+                break
+            }
+
+            if ($ligne.PC -eq "" -or $ligne.Desc -eq "") {
+                # PC ou description manquant : ligne signalée, rien n'est modifié
+                $etat = "LIGNE INVALIDE"
+            }
+            elseif ($ligne.Desc.Length -gt 48) {
+                # Windows limite la description d'un poste à 48 caractères
+                $etat = "DESC. TROP LONGUE"
+            }
+            else {
+                $etat = (Set-DescriptionPoste -PC $ligne.PC -Desc $ligne.Desc).Etat
+            }
+
+            if ($etatsOK -contains $etat) { $nbOK++ } else { $nbKO++ }
+
+            if ($ligne.Row) {
+                Set-SuiviRowEtat $ligne.Row $etat
+                Show-SuiviRow $ligne.Row
+            }
+            else {
+                $null = Add-SuiviRow -PC $ligne.PC -Desc $ligne.Desc -Etat $etat -Action $ligne.Action
+            }
+
+            $index++
+            $progressBar.Value = [Math]::Min(100, [int](($index / $total) * 100))
+            Set-Status "$Libelle... ($index / $total)"
+
+            [System.Windows.Forms.Application]::DoEvents()
+        }
+
+        if (-not $script:CancelRequested) {
+            Set-Status "$Libelle : terminé"
+        }
+    }
+    finally {
+        $progressBar.Value = 0
+        $progressBar.Visible = $false
+
+        $script:IsCsvRunning = $false
+        $script:CancelRequested = $false
+        Set-CsvButtonMode $false
+        Enable-UI
     }
 
-    # Fenêtre de sélection CSV
-    $dialog = New-Object System.Windows.Forms.OpenFileDialog
-    $dialog.Filter = "Fichier CSV (*.csv)|*.csv"
-    $dialog.Title = "Sélectionner un fichier CSV"
+    [PSCustomObject]@{ OK = $nbOK; KO = $nbKO; Traites = $index; Total = $total }
+}
 
-    $result = $dialog.ShowDialog()
-if ($result -ne [System.Windows.Forms.DialogResult]::OK) { return }
+# Propose le rapport CSV du suivi ; s'il reste des échecs relançables, les exporte aussi
+# dans un CSV au format d'entrée (PC;Description), prêt à être repassé dans « Traiter CSV »
+function Export-RapportSiDemande {
+    if (-not $script:CsvPath) { return }
+
+    $reponse = [System.Windows.Forms.MessageBox]::Show(
+        $form,
+        "Voulez-vous générer le rapport CSV du traitement ?",
+        "Rapport",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Question
+    )
+    if ($reponse -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+
+    try {
+        $date = Get-Date -Format "yyyy-MM-dd_HH-mm"
+
+        $rep = $script:CsvPath -replace "\.csv$", "_RAPPORT_$date.csv"
+        @($gridResults.Rows | ForEach-Object {
+            [PSCustomObject]@{
+                PC          = "$($_.Cells['colPC'].Value)"
+                Description = "$($_.Cells['colDesc'].Value)"
+                Etat        = "$($_.Cells['colEtat'].Value)"
+            }
+        }) | Export-Csv -Path $rep -Delimiter ";" -NoTypeInformation -Encoding UTF8
+        $txtOut.Text += $nl + "Rapport exporté : $rep"
+
+        $echecs = Get-LignesAReessayer
+        if ($echecs.Count -gt 0) {
+            $fic = $script:CsvPath -replace "\.csv$", "_ECHECS_$date.csv"
+            @($echecs | ForEach-Object { [PSCustomObject]@{ PC = $_.Tag.PC; Description = $_.Tag.Desc } }) |
+                Export-Csv -Path $fic -Delimiter ";" -NoTypeInformation -Encoding UTF8
+            $txtOut.Text += $nl + "Postes en échec, à repasser dans « Traiter CSV » : $fic"
+        }
+    }
+    catch {
+        $txtOut.Text += $nl + "Export impossible : $($_.Exception.Message)"
+    }
+}
+
+# Bilan d'un lot dans la zone de résultat, puis proposition du rapport
+function Show-BilanLot {
+    param($Bilan, [string]$Libelle)
+
+    $texte = "$Libelle : OK = $($Bilan.OK) | Échecs = $($Bilan.KO)"
+    if ($Bilan.Traites -lt $Bilan.Total) { $texte += " | Non traités = $($Bilan.Total - $Bilan.Traites)" }
+
+    $nbEchecs = (Get-LignesAReessayer).Count
+    if ($nbEchecs -gt 0) {
+        $texte += $nl + "$nbEchecs poste(s) en échec : « Réessayer les échecs » les relance (par exemple une fois les postes allumés)."
+    }
+
+    $txtOut.Text = $texte
+    Update-BoutonReessayer
+    Export-RapportSiDemande
+}
+
+# Lance le traitement d'un fichier CSV (bouton « Traiter CSV » ou fichier déposé sur la fenêtre)
+function Start-TraitementCsv {
+    param([string]$Chemin)
+
+    if ($script:IsCsvRunning -or -not $btnCSV.Enabled) { return }
 
     # Confirmation avant traitement
-    $nomFichier = [System.IO.Path]::GetFileName($dialog.FileName)
+    $nomFichier = [System.IO.Path]::GetFileName($Chemin)
     $confirm = [System.Windows.Forms.MessageBox]::Show(
+        $form,
         "Le fichier ""$nomFichier"" va être utilisé pour modifier les postes listés.${nl}${nl}Êtes-vous sûr de vouloir continuer ?",
         "Confirmation",
         [System.Windows.Forms.MessageBoxButtons]::YesNo,
@@ -541,26 +656,9 @@ if ($result -ne [System.Windows.Forms.DialogResult]::OK) { return }
     )
     if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
 
-    $script:IsCsvRunning = $true
-    $script:CancelRequested = $false
-    Set-CsvButtonMode $true
-
-    Disable-UI
-    Set-Status "Traitement du CSV..."
-
-    $progressBar.Visible = $true
-    $progressBar.Value = 0
-
-    $gridResults.Rows.Clear()
-    $txtOut.Text = "Traitement en cours — suivi ci-dessous."
-
     try {
-
-        $null = Import-Module ActiveDirectory -ErrorAction Stop
-        $path = $dialog.FileName
-
         # @() : sous PowerShell 5.1, un CSV d'une seule ligne ne renvoie pas de tableau (pas de .Count)
-        $data = @(Import-Csv -Path $path -Delimiter ";")
+        $data = @(Import-Csv -Path $Chemin -Delimiter ";")
 
         # En-tête obligatoire : colonnes PC et Description
         if ($data.Count -gt 0) {
@@ -580,101 +678,224 @@ if ($result -ne [System.Windows.Forms.DialogResult]::OK) { return }
             return
         }
 
-        $resultats = @()
-        $nbOK = 0
-        $nbKO = 0
-        $total = $data.Count
-        $index = 0
+        $script:CsvPath = $Chemin
+        $gridResults.Rows.Clear()
+        Update-BoutonReessayer
+        $txtOut.Text = "Traitement en cours — suivi ci-dessous."
+        Set-Status "Traitement du CSV..."
 
-        foreach ($line in $data) {
-
-            # === PATCH ANNULER ===
-            if ($script:CancelRequested) {
-                Set-Status "Traitement annulé ($index / $total)"
-                break
-            }
-
-            $pc   = "$($line.PC)".Trim()
-            $desc = "$($line.Description)".Trim()
-            $etat = "OK"
-
-            if ($pc -eq "" -or $desc -eq "") {
-                # PC ou description manquant : ligne signalée, rien n'est modifié
-                $etat = "LIGNE INVALIDE"
-            }
-            elseif (!(Test-Connection -ComputerName $pc -Count 1 -Quiet)) {
-                $etat = "PING K.O"
-            }
-            elseif (!(Test-Path "\\$pc\ADMIN$")) {
-                $etat = "ADMIN$ K.O"
-            }
-            else {
-                try {
-                    $r=[Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine',$pc)
-                    $k=$r.OpenSubKey('SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters',$true)
-                    $k.SetValue('srvcomment',$desc,'String')
-                    $k.Close()
-
-                    Set-ADComputer -Identity $pc -Description $desc
-                }
-                catch {
-                    $etat = "ERREUR"
-                }
-            }
-
-            if ($etat -eq "OK") { $nbOK++ } else { $nbKO++ }
-
-            $resultats += [PSCustomObject]@{
-                PC = $pc
-                Description = $desc
-                Etat = $etat
-            }
-
-            Add-SuiviRow -PC $pc -Desc $desc -Etat $etat
-
-            $index++
-            $progressBar.Value = [Math]::Min(100, [int](($index / $total) * 100))
-            Set-Status "Traitement du CSV... ($index / $total)"
-
-            [System.Windows.Forms.Application]::DoEvents()
-        }
-
-        if (-not $script:CancelRequested) {
-            Set-Status "Traitement terminé"
-        }
-
-        $txtOut.Text = "Résumé : OK = $nbOK | Échecs = $nbKO"
-
-        $genererRapport = [System.Windows.Forms.MessageBox]::Show(
-            "Voulez-vous générer le rapport CSV du traitement ?",
-            "Rapport",
-            [System.Windows.Forms.MessageBoxButtons]::YesNo,
-            [System.Windows.Forms.MessageBoxIcon]::Question
-        )
-        if ($genererRapport -eq [System.Windows.Forms.DialogResult]::Yes) {
-            $date = Get-Date -Format "yyyy-MM-dd_HH-mm"
-            $rep = $path -replace "\.csv$", "_RAPPORT_$date.csv"
-            $resultats | Export-Csv -Path $rep -Delimiter ";" -NoTypeInformation -Encoding UTF8
-            $txtOut.Text += $nl + "Rapport exporté : $rep"
-        }
+        $lignes = @($data | ForEach-Object {
+            [PSCustomObject]@{ Row = $null; PC = "$($_.PC)".Trim(); Desc = "$($_.Description)".Trim(); Action = 'csv' }
+        })
+        $bilan = Invoke-LotPostes -Lignes $lignes -Libelle "Traitement du CSV"
+        Show-BilanLot -Bilan $bilan -Libelle "Résumé"
     }
     catch {
         Set-Status "Erreur CSV"
         $txtOut.Text = "Erreur CSV : $($_.Exception.Message)"
     }
     finally {
-        Enable-UI
-        $progressBar.Value = 0
-        $progressBar.Visible = $false
+        Set-Status "Prêt"
+    }
+}
 
-        $script:IsCsvRunning = $false
-        $script:CancelRequested = $false
-        Set-CsvButtonMode $false
+############################################
+# Action bouton
+############################################
 
+# Action Aide CSV
+$null = $btnHelp.Add_Click({
+    [void][System.Windows.Forms.MessageBox]::Show(
+"FORMAT CSV OBLIGATOIRE :
+
+PC;Description
+NOM_DU_POSTE_1;Description du poste 1
+NOM_DU_POSTE_2;Description du poste 2
+
+RÈGLES :
+- Séparateur : point-virgule (;)
+- Première ligne obligatoire
+- Un PC par ligne
+- Description : 48 caractères maximum (limite Windows)
+- Ligne sans PC ou sans description : signalée « LIGNE INVALIDE », non appliquée
+
+ASTUCES :
+- Le fichier peut aussi être déposé directement sur la fenêtre
+- Avec le rapport, les postes en échec sont exportés dans un fichier _ECHECS_, prêt à être repassé ici",
+"Aide – Format CSV",
+[System.Windows.Forms.MessageBoxButtons]::OK,
+[System.Windows.Forms.MessageBoxIcon]::Information
+    )
+})
+
+# Action Vérifier le PC : accès (ping + ADMIN$), description actuelle et système du poste
+$null = $btnTest.Add_Click({
+    $pc = $txtPC.Text.Trim()
+
+    if ($pc -eq "") {
+        $txtOut.Text = "Aucun PC spécifié."
+        return
+    }
+
+    try {
+        Set-Status "Vérification de $pc..."
+        $form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+
+        $acces = Test-AccesPoste $pc
+        if ($acces) {
+            $null = Add-SuiviRow -PC $pc -Desc "" -Etat $acces -Action 'verifier'
+            $txtOut.Text = if ($acces -eq "PING K.O") { "Ping K.O : $pc est hors ligne." }
+                           else { "ADMIN$ K.O : pas d'accès administrateur sur $pc." }
+            return
+        }
+
+        $r = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $pc)
+        $k = $r.OpenSubKey('SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters', $false)
+        $val = $k.GetValue('srvcomment')
+        $k.Close()
+
+        $kOS = $r.OpenSubKey('SOFTWARE\Microsoft\Windows NT\CurrentVersion', $false)
+        $product = $kOS.GetValue('ProductName')
+        $version = $kOS.GetValue('DisplayVersion')
+        if (-not $version) { $version = $kOS.GetValue('ReleaseId') }
+        $kOS.Close()
+
+        $null = Add-SuiviRow -PC $pc -Desc "$val" -Etat "JOIGNABLE" -Action 'verifier'
+        $txtOut.Text =
+        "OK : $pc est joignable." + $nl +
+        "Description actuelle : $val" + $nl +
+        "OS : $product $version"
+    }
+    catch {
+        $null = Add-SuiviRow -PC $pc -Desc "" -Etat "ERREUR" -Action 'verifier'
+        $txtOut.Text = "Erreur : $($_.Exception.Message)"
+    }
+    finally {
+        $form.Cursor = [System.Windows.Forms.Cursors]::Default
+        Set-Status "Prêt"
+    }
+})
+# Action Appliquer : mêmes contrôles que le traitement CSV (ping + ADMIN$), puis registre et AD
+$null = $btnApply.Add_Click({
+    $pc = $txtPC.Text.Trim()
+    $desc = $txtDesc.Text.Trim()
+
+    if ($pc -eq "" -or $desc -eq "") {
+        $txtOut.Text = "Champs incomplets."
+        return
+    }
+
+    try {
+        Set-Status "Application sur $pc..."
+        $form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+
+        $resultat = Set-DescriptionPoste -PC $pc -Desc $desc
+        $null = Add-SuiviRow -PC $pc -Desc $desc -Etat $resultat.Etat -Action 'appliquer'
+
+        $txtOut.Text = switch ($resultat.Etat) {
+            "OK"         { "Description appliquée sur $pc : registre et AD mis à jour." }
+            "PING K.O"   { "Ping K.O : $pc est hors ligne. Rien n'a été modifié." }
+            "ADMIN$ K.O" { "ADMIN$ K.O : pas d'accès administrateur sur $pc. Rien n'a été modifié." }
+            default      { "Erreur sur $pc — $($resultat.Detail)" }
+        }
+        Update-BoutonReessayer
+    }
+    catch {
+        $txtOut.Text = "Erreur : $($_.Exception.Message)"
+    }
+    finally {
+        $form.Cursor = [System.Windows.Forms.Cursors]::Default
+        Set-Status "Prêt"
+    }
+})
+# Action Traiter CSV (un 2e clic pendant un lot demande l'annulation)
+$null = $btnCSV.Add_Click({
+
+    if ($script:IsCsvRunning) {
+        $script:CancelRequested = $true
+        Set-Status "Annulation demandée..."
+        return
+    }
+
+    $dialog = New-Object System.Windows.Forms.OpenFileDialog
+    $dialog.Filter = "Fichier CSV (*.csv)|*.csv"
+    $dialog.Title = "Sélectionner un fichier CSV"
+    if ($dialog.ShowDialog($form) -ne [System.Windows.Forms.DialogResult]::OK) { return }
+
+    Start-TraitementCsv -Chemin $dialog.FileName
+})
+
+# Action Réessayer les échecs : relance, sur place dans le suivi, les postes en échec
+$null = $btnRetry.Add_Click({
+    if ($script:IsCsvRunning) { return }
+
+    $lignesEchec = Get-LignesAReessayer
+    if ($lignesEchec.Count -eq 0) {
+        Update-BoutonReessayer
+        return
+    }
+
+    try {
+        $txtOut.Text = "Nouvelle tentative sur $($lignesEchec.Count) poste(s) en échec..."
+        Set-Status "Nouvelle tentative..."
+
+        $lignes = @($lignesEchec | ForEach-Object {
+            [PSCustomObject]@{ Row = $_; PC = $_.Tag.PC; Desc = $_.Tag.Desc; Action = $_.Tag.Action }
+        })
+        $bilan = Invoke-LotPostes -Lignes $lignes -Libelle "Nouvelle tentative"
+        Show-BilanLot -Bilan $bilan -Libelle "Nouvelle tentative"
+    }
+    catch {
+        Set-Status "Erreur"
+        $txtOut.Text = "Erreur : $($_.Exception.Message)"
+    }
+    finally {
         Set-Status "Prêt"
     }
 })
 
+############################################
+# Glisser-déposer d'un fichier CSV sur la fenêtre
+############################################
+
+# Chemin du CSV déposé, s'il s'agit d'un seul fichier .csv
+function Get-CsvDepose {
+    param($Donnees)
+
+    if (-not $Donnees.GetDataPresent([System.Windows.Forms.DataFormats]::FileDrop)) { return $null }
+    $fichiers = @($Donnees.GetData([System.Windows.Forms.DataFormats]::FileDrop))
+    if ($fichiers.Count -ne 1 -or [System.IO.Path]::GetExtension($fichiers[0]) -ne '.csv') { return $null }
+    $fichiers[0]
+}
+
+# Le traitement démarre juste après la fin du dépôt : un dialogue ouvert pendant le dépôt bloquerait l'Explorateur
+$script:CsvDepose = $null
+$timerDepot = New-Object System.Windows.Forms.Timer
+$timerDepot.Interval = 100
+$null = $timerDepot.Add_Tick({
+    $timerDepot.Stop()
+    $chemin = $script:CsvDepose
+    $script:CsvDepose = $null
+    if ($chemin) { Start-TraitementCsv -Chemin $chemin }
+})
+
+$surDragEnter = {
+    $ok = $btnCSV.Enabled -and -not $script:IsCsvRunning -and (Get-CsvDepose $_.Data)
+    $_.Effect = if ($ok) { [System.Windows.Forms.DragDropEffects]::Copy } else { [System.Windows.Forms.DragDropEffects]::None }
+}
+$surDragDrop = {
+    $chemin = Get-CsvDepose $_.Data
+    if ($chemin -and $btnCSV.Enabled -and -not $script:IsCsvRunning) {
+        $script:CsvDepose = $chemin
+        $timerDepot.Start()
+    }
+}
+
+foreach ($cible in @($form, $pnlHeader, $txtOut, $gridResults)) {
+    $cible.AllowDrop = $true
+    $null = $cible.Add_DragEnter($surDragEnter)
+    $null = $cible.Add_DragDrop($surDragDrop)
+}
 
 ############################################
 # Rappel compte / domaine + blocage si prérequis non remplis
@@ -701,6 +922,7 @@ if (-not $script:PrerequisOK) {
     $btnTest.Enabled  = $false
     $btnApply.Enabled = $false
     $btnCSV.Enabled   = $false
+    $btnRetry.Enabled = $false
     $lblSession.ForeColor = $colorKoFore
 
     $script:MessagePrerequis =
@@ -879,11 +1101,8 @@ if ($script:ExeActuel) {
     catch { $script:IconeApp = $null }
 }
 
-# La fenêtre principale est toujours au premier plan : on le suspend pour que le navigateur
-# s'ouvre devant, et il revient dès que l'utilisateur revient sur l'outil
 function Open-PageDepot {
     try {
-        $form.TopMost = $false
         Start-Process $urlDepot
     }
     catch {
@@ -895,7 +1114,6 @@ function Open-PageDepot {
         )
     }
 }
-$null = $form.Add_Activated({ if (-not $form.TopMost) { $form.TopMost = $true } })
 
 # Lien blanc dans le bandeau d'en-tête
 function New-LienEnTete {
@@ -1014,7 +1232,6 @@ function Show-APropos {
 $null = $lnkGitHub.Add_LinkClicked({ if (-not $script:IsCsvRunning) { Open-PageDepot } })
 $null = $lnkAPropos.Add_LinkClicked({ if (-not $script:IsCsvRunning) { Show-APropos } })
 
-$null = $form.Topmost = $true
 
 $null = $form.Add_Shown({
 
