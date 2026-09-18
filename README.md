@@ -7,14 +7,14 @@ Outil Windows avec interface graphique pour modifier la description des postes d
 | Fichier | Description |
 |---|---|
 | `Computer Description Tool.exe` | Exécutable prêt à l'emploi — **à utiliser pour lancer l'outil** |
-| `Computer-Description-Tool-1.4.ps1` | Code source de la version actuelle (fourni pour référence/transparence, non destiné à être exécuté directement) |
+| `Computer-Description-Tool-1.5.ps1` | Code source de la version actuelle (fourni pour référence/transparence, non destiné à être exécuté directement) |
 | `icon.ico` | Icône de l'application, utilisée lors de la génération de l'exe |
 | `archive/` | Versions précédentes, telles qu'elles ont été publiées |
 
 ## 🚀 Utilisation
 
 1. Télécharger `Computer Description Tool.exe` depuis la [page Releases](https://github.com/vzeol/computer-description-tool/releases/latest) et le lancer. Les versions suivantes sont ensuite proposées automatiquement au lancement.
-2. Pour un poste : saisir son nom (auto-complété depuis l'AD) et la description, puis « Appliquer » (ou Entrée). « Vérifier le PC » affiche la description actuelle et le système du poste.
+2. Pour un poste : saisir son nom (auto-complété depuis l'AD) et la description, puis « Appliquer » (ou Entrée). « Vérifier le PC » affiche la description actuelle et le système du poste ; « Réveiller le PC » démarre un poste éteint (Wake-on-LAN).
 3. Pour un lot de postes : préparer un fichier CSV au format suivant :
 
    ```
@@ -30,7 +30,8 @@ Outil Windows avec interface graphique pour modifier la description des postes d
    - Description : 48 caractères maximum (limite Windows) ; au-delà, la ligne est signalée « DESC. TROP LONGUE » et n'est pas appliquée
 
 4. Cliquer sur « Traiter CSV » (ou déposer le fichier sur la fenêtre) et confirmer. Le suivi (PC / Description / État) s'affiche en temps réel et sert de journal de la session ; Ctrl+C copie les lignes sélectionnées. En fin de traitement, un rapport CSV (`_RAPPORT_<date>.csv`) peut être généré sur demande ; les postes encore en échec sont alors aussi exportés dans `_ECHECS_<date>.csv`, prêt à être repassé.
-5. Les postes en échec (éteints, inaccessibles) se relancent à tout moment avec « Réessayer les échecs », par exemple une fois allumés.
+5. Les postes en échec (éteints, inaccessibles) se relancent à tout moment avec « Réessayer les échecs ». Avec la case « Réveil automatique des postes éteints » cochée, les postes éteints dont l'adresse MAC est connue sont réveillés (Wake-on-LAN) pendant un lot ou une relance, puis traités dès qu'ils répondent.
+6. Un problème ? « Signaler un bug », dans le bandeau, prépare un rapport de diagnostic et ouvre un formulaire de signalement, sans compte.
 
 ## 🔄 Mises à jour
 
@@ -38,10 +39,11 @@ Au lancement, l'outil vérifie sur la page Releases de ce dépôt si une version
 
 Le dossier qui contient l'exe doit être accessible en écriture ; sinon, l'outil indique où télécharger la nouvelle version.
 
-## 🧩 Fonctionnalités (v1.4)
+## 🧩 Fonctionnalités (v1.5)
 
 - Mise à jour automatique au lancement, avec confirmation
-- Liens « GitHub » et « À propos » dans le bandeau : page du projet, version, auteur
+- Liens « GitHub », « Signaler un bug » et « À propos » dans le bandeau : page du projet, signalement d'un problème avec rapport de diagnostic (sans compte), version et auteur
+- Réveil des postes éteints (Wake-on-LAN) : automatique pendant les lots et relances (case à cocher) ou à la demande avec « Réveiller le PC » ; adresses MAC lues dans le DHCP du serveur et mémorisées dans l'AD
 - Vérification des prérequis au lancement (contrôleur de domaine ou poste du domaine, compte administrateur du domaine, module RSAT) : si un prérequis manque, un message l'indique et les fonctions de modification sont désactivées
 - Rappel du compte et du domaine utilisés dans la barre de statut
 - Auto-complétion des noms de postes depuis l'Active Directory
@@ -49,7 +51,7 @@ Le dossier qui contient l'exe doit être accessible en écriture ; sinon, l'outi
 - Vérification de la disponibilité du poste (ping + accès `ADMIN$`) avant toute modification, à l'unité comme par lot
 - Traitement par lot via CSV (bouton ou glisser-déposer) : confirmation avant lancement, suivi coloré ligne par ligne, lignes invalides ou trop longues signalées sans interrompre le lot, annulation possible
 - Relance des postes en échec avec « Réessayer les échecs »
-- Journal de la session dans la grille (lots, vérifications, applications), copiable avec Ctrl+C
+- Journal de la session dans la grille, avec la colonne Action (lot, relance, application, vérification, réveil), copiable avec Ctrl+C
 - Rapport CSV optionnel en fin de traitement, accompagné d'un fichier des postes en échec prêt à être repassé
 - Interface verrouillée pendant un traitement, barre de progression
 
@@ -65,7 +67,8 @@ Le dossier qui contient l'exe doit être accessible en écriture ; sinon, l'outi
 | 1.2 | Vérification des prérequis au lancement |
 | 1.3 | Mise à jour automatique, rappel compte/domaine, traitement CSV fiabilisé (fichier d'une seule ligne, lignes incomplètes, en-tête vérifié), nouvelle icône |
 | 1.3.1 | Liens « GitHub » et « À propos » dans le bandeau, icône de l'outil dans la barre de titre et la barre des tâches |
-| **1.4** | Relance des postes en échec et export des échecs, contrôles d'accès sur « Appliquer », journal de session, glisser-déposer d'un CSV, raccourcis clavier, limite de 48 caractères, fenêtre plus forcée au premier plan |
+| 1.4 | Relance des postes en échec et export des échecs, contrôles d'accès sur « Appliquer », journal de session, glisser-déposer d'un CSV, raccourcis clavier, limite de 48 caractères, fenêtre plus forcée au premier plan |
+| **1.5** | Réveil des postes éteints (Wake-on-LAN) automatique ou à la demande, colonne Action dans le journal, signalement d'un problème avec rapport de diagnostic |
 
 Les versions 1.3 et suivantes sont conservées dans `archive/` telles qu'elles ont été publiées ; les versions antérieures ne sont pas publiées dans ce dépôt.
 
@@ -76,5 +79,6 @@ Les versions 1.3 et suivantes sont conservées dans `archive/` telles qu'elles o
 - Compte administrateur du domaine (membre du groupe « Admins du domaine ») — pas besoin de « Exécuter en tant qu'administrateur »
 - Module PowerShell `ActiveDirectory` (RSAT)
 - Accès réseau aux postes : ping, partage `ADMIN$` et registre à distance
+- Pour le réveil des postes (facultatif) : rôle DHCP sur le serveur où l'outil est lancé (ou outils RSAT DHCP), et Wake-on-LAN activé dans le BIOS/UEFI et sur la carte réseau des postes. L'info-bulle du compte, dans la barre de statut, indique si le réveil est disponible.
 
 Ces prérequis sont vérifiés au lancement. S'il en manque un, un message indique lequel et les fonctions « Vérifier le PC », « Appliquer » et « Traiter CSV » sont désactivées (l'aide CSV reste accessible).
