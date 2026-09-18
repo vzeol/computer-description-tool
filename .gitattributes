@@ -1,0 +1,4 @@
+# Scripts Windows PowerShell 5.1 : toujours en CRLF (le BOM UTF-8, lui, est à vérifier à chaque écriture)
+*.ps1 text eol=crlf
+*.exe binary
+*.ico binary
